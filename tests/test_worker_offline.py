@@ -125,13 +125,14 @@ def test_schema_defaults_for_latency():
 
 def test_llm_and_stt_latency_options():
     from engine.schemas.agent import ProviderRef
-    from engine.worker.pipeline import build_llm, build_stt, stt_provides_turns
+    from engine.worker.pipeline import build_llm, build_stt, stt_provides_turns, unwrap_llm
     settings = Settings(_env_file=None, deepgram_api_key="dg", google_api_key="gk", groq_api_key="gq")
-    llm = build_llm(ProviderRef(provider="google", model="gemini-2.5-flash", options={"temperature": 0.4}), settings)
+    # build_llm wraps the primary in a FallbackAdapter when groq is keyed; inspect the primary
+    llm = unwrap_llm(build_llm(ProviderRef(provider="google", model="gemini-2.5-flash", options={"temperature": 0.4}), settings))
     assert llm._opts.thinking_config == {"thinking_budget": 0}          # thinking off by default for 2.5
-    llm = build_llm(ProviderRef(provider="google", model="gemini-2.5-flash", options={"thinking_budget": -1}), settings)
+    llm = unwrap_llm(build_llm(ProviderRef(provider="google", model="gemini-2.5-flash", options={"thinking_budget": -1}), settings))
     assert llm._opts.thinking_config is None or llm._opts.thinking_config == {} or not llm._opts.thinking_config
-    groq = build_llm(ProviderRef(provider="groq", model="llama-3.1-8b-instant"), settings)
+    groq = unwrap_llm(build_llm(ProviderRef(provider="groq", model="llama-3.1-8b-instant"), settings))
     assert "groq.com" in str(groq._client.base_url)
     flux = build_stt(ProviderRef(provider="deepgram", model="flux-general-multi"), settings, "en-IN")
     assert stt_provides_turns(flux) and flux._opts.language_hint == ["en", "hi"]

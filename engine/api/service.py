@@ -435,7 +435,15 @@ class EngineService:
             await self._emit(db, call, EventType.call_transition, data)
             return
         if etype == "metrics":
-            call.metrics = data
+            events = list((call.metrics or {}).get("provider_events") or [])
+            call.metrics = {**data, "provider_events": events + list(data.get("provider_events") or [])} \
+                if events and not data.get("provider_events") else data
+            await db.commit()
+            return
+        if etype == "provider":
+            metrics = dict(call.metrics or {})
+            metrics["provider_events"] = list(metrics.get("provider_events") or []) + [data]
+            call.metrics = metrics
             await db.commit()
             return
         if etype == "ended":

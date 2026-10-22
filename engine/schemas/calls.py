@@ -61,10 +61,15 @@ class TurnMetrics(BaseModel):
     tts_ttfb: Optional[float] = Field(default=None, description="TTS time to first byte")
     total: Optional[float] = Field(default=None, description="end of user speech -> first agent audio")
     at: float = Field(default=0.0, description="seconds since call start")
+    stt_provider: Optional[str] = Field(default=None, description="vendor that served this turn (failover visible)")
+    llm_provider: Optional[str] = None
+    tts_provider: Optional[str] = None
 
 
 class CallMetrics(BaseModel):
     turns: list[TurnMetrics] = Field(default_factory=list)
+    provider_events: list[dict[str, Any]] = Field(default_factory=list,
+                                                  description="availability changes: {kind, provider, available, at}")
     total_p50: Optional[float] = None
     total_p95: Optional[float] = None
     llm_ttft_p50: Optional[float] = None

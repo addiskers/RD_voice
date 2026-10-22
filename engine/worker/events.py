@@ -41,6 +41,20 @@ class CallReporter:
         self.node_id: Optional[str] = None
         self.errors: list[str] = []
         self._realtime = False
+        self._session: Optional[AgentSession] = None
+        self.current_providers: dict[str, str] = {}
+        self.stt_failed = False          # the turn-driving STT (Flux) died: the call cannot commit turns
+
+    def _new_turn(self, **kwargs: Any) -> TurnMetrics:
+        """A TurnMetrics stamped with the vendors serving each stage right now (so failovers are visible)."""
+        if self._session is not None:
+            try:
+                from engine.worker.pipeline import provider_labels
+                self.current_providers = provider_labels(self._session)
+            except Exception:
+                pass
+        p = self.current_providers
+        return TurnMetrics(stt_provider=p.get("stt"), llm_provider=p.get("llm"), tts_provider=p.get("tts"), **kwargs)
 
     # ------------------------------------------------------------------ transport
     def start(self) -> None:
@@ -86,10 +100,12 @@ class CallReporter:
 
     # ------------------------------------------------------------------ session wiring
     def attach(self, session: AgentSession) -> None:
+        self._session = session
         try:
             self._realtime = isinstance(session.llm, lk_llm.RealtimeModel)
         except Exception:
             self._realtime = False
+        self._subscribe_availability(session)
 
         @session.on("conversation_item_added")
         def _item(ev):
@@ -126,15 +142,15 @@ class CallReporter:
             try:
                 if mtype == "eou_metrics":
                     self._turn_index += 1
-                    self._current = TurnMetrics(turn=self._turn_index, at=self.at(),
-                                                eou_delay=round(m.end_of_utterance_delay, 3),
-                                                stt_delay=round(m.transcription_delay, 3))
+                    self._current = self._new_turn(turn=self._turn_index, at=self.at(),
+                                                   eou_delay=round(m.end_of_utterance_delay, 3),
+                                                   stt_delay=round(m.transcription_delay, 3))
                     self.metrics.turns.append(self._current)
                 elif mtype == "llm_metrics":
                     target = self._current or (self.metrics.turns[-1] if self.metrics.turns else None)
                     if target is None:
                         self._turn_index += 1
-                        target = self._current = TurnMetrics(turn=self._turn_index, at=self.at())
+                        target = self._current = self._new_turn(turn=self._turn_index, at=self.at())
                         self.metrics.turns.append(target)
                     if target.llm_ttft is None and m.ttft is not None and m.ttft >= 0:
                         target.llm_ttft = round(m.ttft, 3)   # -1 = preemptive generation, not measured
@@ -159,7 +175,7 @@ class CallReporter:
             if ev.new_state == "listening" and ev.old_state == "speaking" and self._realtime:
                 self._last_user_stop = float(getattr(ev, "created_at", time.time()))
                 self._turn_index += 1
-                self._current = TurnMetrics(turn=self._turn_index, at=self.at())
+                self._current = self._new_turn(turn=self._turn_index, at=self.at())
                 self.metrics.turns.append(self._current)
 
         @session.on("session_usage_updated")
@@ -194,6 +210,14 @@ class CallReporter:
             logger.error("session error on %s: %s", self.call_id, self.errors[-1])
             # local listeners only (browser console): the API learns about errors from the 'ended' event
             source = getattr(ev, "source", None)
+            try:
+                from livekit.plugins import deepgram
+                if isinstance(source, deepgram.STTv2) and not getattr(ev, "recoverable", False):
+                    from engine.worker.breaker import BREAKER, FLUX_KEY
+                    BREAKER.record_failure(FLUX_KEY)
+                    self.stt_failed = True
+            except Exception:
+                pass
             payload = {"message": self.errors[-1][:300], "source": type(source).__name__ if source else "",
                        "recoverable": bool(getattr(ev, "recoverable", False))}
             for fn in list(self.listeners):
@@ -201,6 +225,26 @@ class CallReporter:
                     fn("error", payload)
                 except Exception:
                     pass
+
+    def _subscribe_availability(self, session: AgentSession) -> None:
+        """FallbackAdapters emit availability changes; report them so the record shows who served the call."""
+        for kind in ("stt", "llm", "tts"):
+            comp = getattr(session, kind, None)
+            if comp is None or not hasattr(comp, "_active_instance"):
+                continue
+
+            def _handler(ev, kind=kind):
+                from engine.worker.pipeline import provider_id
+                provider = provider_id(getattr(ev, kind, None))
+                available = bool(getattr(ev, "available", False))
+                logger.warning("%s provider %s is now %s on %s", kind, provider,
+                               "available" if available else "UNAVAILABLE (failing over)", self.call_id)
+                self.post("provider", {"kind": kind, "provider": provider, "available": available, "at": self.at()})
+
+            try:
+                comp.on(f"{kind}_availability_changed", _handler)
+            except Exception as e:
+                logger.debug("cannot subscribe to %s availability: %s", kind, e)
 
     def started(self) -> None:
         self.post("started", {"worker_url": self.worker_url, "worker_id": self.worker_id, "at": self.at()})

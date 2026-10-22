@@ -25,6 +25,8 @@ class ProviderRef(BaseModel):
     model: Optional[str] = None
     api_key: Optional[str] = Field(default=None, description="BYOK; falls back to the engine's key")
     options: dict[str, Any] = Field(default_factory=dict, description="Provider-specific constructor kwargs")
+    fallback: Optional[str] = Field(default=None, description="Second vendor used mid-call when this one fails "
+                                    "(engine default when omitted; '' disables)")
 
 
 class VoiceRef(ProviderRef):

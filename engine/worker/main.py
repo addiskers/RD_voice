@@ -183,7 +183,12 @@ async def run_call(runtime: dict[str, Any], *, session_factory, attach_io, hangu
 
     @session.on("close")
     def _on_close(ev):
-        reason = handle.end_reason or f"session_{getattr(getattr(ev, 'reason', None), 'value', 'closed')}"
+        if handle.end_reason:
+            reason = handle.end_reason
+        elif handle.reporter.stt_failed:
+            reason = "stt_failed"          # Flux died mid-call; the breaker keeps the next calls off Flux
+        else:
+            reason = f"session_{getattr(getattr(ev, 'reason', None), 'value', 'closed')}"
         handle.tasks.append(asyncio.create_task(finalize(handle, reason)))
 
     async def _max_duration():
