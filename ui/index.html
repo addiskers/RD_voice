@@ -19,6 +19,7 @@
   <button data-tab="talk" class="active">Talk (browser mic)</button>
   <button data-tab="phone">Phone call</button>
   <button data-tab="calls">Calls</button>
+  <button data-tab="ops">Ops</button>
   <button data-tab="agent">Agent JSON</button>
 </nav>
 <main>
@@ -133,6 +134,38 @@
       <div class="card">
         <h2>Call detail</h2>
         <div id="call-detail"><small>Select a call.</small></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------------------ OPS -->
+  <section class="tab" id="tab-ops">
+    <div class="grid" style="grid-template-columns: 1fr 1fr">
+      <div class="card">
+        <h2>Workers <small id="ops-updated"></small></h2>
+        <table><thead><tr><th>id</th><th>url</th><th>sessions</th><th>status</th><th>seen</th><th></th></tr></thead><tbody id="ops-workers"></tbody></table>
+        <div class="status" id="ops-workers-status"></div>
+      </div>
+      <div class="card">
+        <h2>Capacity</h2>
+        <div class="kv" id="ops-capacity"><div>engine</div><div>—</div></div>
+      </div>
+      <div class="card">
+        <h2>Webhook deliveries <small id="ops-deliveries-call">select a call in the Calls tab</small></h2>
+        <table><thead><tr><th>seq</th><th>event</th><th>status</th><th>attempts</th><th>last</th><th></th></tr></thead><tbody id="ops-deliveries"></tbody></table>
+        <div class="status" id="ops-deliveries-status"></div>
+      </div>
+      <div class="card">
+        <h2>Telephony smoke (fake carrier → real worker endpoint)</h2>
+        <label>Internal token (X-Internal-Token; API must run with ENABLE_TEST_ENDPOINTS=true)</label>
+        <input id="ops-internal-token" placeholder="dev-internal-token" />
+        <div class="row" style="margin-top:8px">
+          <div><label>calls</label><input id="ops-smoke-calls" value="3" /></div>
+          <div><label>script</label><input id="ops-smoke-script" value="yes,no" /></div>
+          <button class="btn" id="ops-smoke-run">Run smoke</button>
+        </div>
+        <div class="status" id="ops-smoke-status">Spends real vendor minutes (about 1 per call).</div>
+        <table id="ops-smoke-table" style="margin-top:8px"><thead><tr><th>#</th><th>call</th><th>status</th><th>turns</th><th>client p50</th><th>engine total</th><th>ok</th></tr></thead><tbody id="ops-smoke-body"></tbody></table>
       </div>
     </div>
   </section>

@@ -87,6 +87,7 @@
       b.classList.add("active");
       $("tab-" + b.dataset.tab).classList.add("active");
       if (b.dataset.tab === "calls") refreshCalls();
+      if (b.dataset.tab === "ops") startOps(); else stopOps();
     };
   });
 
@@ -343,11 +344,15 @@
       document.querySelectorAll("#calls-body tr.click").forEach((tr) => (tr.onclick = () => showCall(tr.dataset.id)));
     } catch (e) { $("calls-body").innerHTML = `<tr><td colspan=5>${esc(e.message)}</td></tr>`; }
   }
+  const providers = (t) => [t.stt_provider, t.llm_provider, t.tts_provider].map((p) => p || "·").join(" / ");
   async function showCall(id) {
+    state.selectedCallId = id;
+    $("ops-deliveries-call").textContent = id;
     try {
       const c = await api("/v1/calls/" + id);
       const m = c.metrics || {};
-      const turns = (m.turns || []).map((t) => `<tr><td>${t.turn}</td><td>${fmt(t.eou_delay)}</td><td>${fmt(t.llm_ttft)}</td><td>${fmt(t.tts_ttfb)}</td><td class="${latClass(t.total)}"><b>${fmt(t.total)}</b></td></tr>`).join("");
+      const turns = (m.turns || []).map((t) => `<tr><td>${t.turn}</td><td>${fmt(t.eou_delay)}</td><td>${fmt(t.llm_ttft)}</td><td>${fmt(t.tts_ttfb)}</td><td class="${latClass(t.total)}"><b>${fmt(t.total)}</b></td><td><small>${esc(providers(t))}</small></td></tr>`).join("");
+      const provEvents = (m.provider_events || []).map((e) => `${e.kind}:${e.provider} ${e.available ? "up" : "DOWN"} @${fmt(e.at, 1)}s`).join(", ");
       $("call-detail").innerHTML = `
         <div class="kv"><div>id</div><div>${c.id}</div><div>status</div><div><span class="pill ${c.status}">${c.status}</span> ${esc(c.end_reason || "")} ${esc(c.hangup_cause || "")}</div>
         <div>to / from</div><div>${esc(c.to)} / ${esc(c.from || "")} (${esc(c.provider)})</div><div>agent</div><div>${esc(c.agent_id || "inline")} v${c.agent_version || "-"}</div>
@@ -355,9 +360,10 @@
         <div>latency</div><div>total p50 ${fmt(m.total_p50)} s · p95 ${fmt(m.total_p95)} s · llm ttft p50 ${fmt(m.llm_ttft_p50)} · tts ttfb p50 ${fmt(m.tts_ttfb_p50)}</div>
         <div>outcome</div><div><code>${esc(JSON.stringify(c.outcome || {}))}</code></div>
         <div>recording</div><div>${c.recording_url ? `<a href="#" data-rec="${c.id}">play</a> <span id="rec-holder"></span>` : "none"}</div>
-        <div>error</div><div>${esc(c.error || "—")}</div></div>
-        <h2 style="margin-top:12px">Per-turn metrics (s)</h2>
-        <table><thead><tr><th>#</th><th>eou</th><th>llm ttft</th><th>tts ttfb</th><th>total</th></tr></thead><tbody>${turns || "<tr><td colspan=5><small>none</small></td></tr>"}</tbody></table>
+        <div>error</div><div>${esc(c.error || "—")}</div>
+        <div>failover</div><div>${esc(provEvents || "none")}</div></div>
+        <h2 style="margin-top:12px">Per-turn metrics (s) · providers stt / llm / tts</h2>
+        <table><thead><tr><th>#</th><th>eou</th><th>llm ttft</th><th>tts ttfb</th><th>total</th><th>providers</th></tr></thead><tbody>${turns || "<tr><td colspan=6><small>none</small></td></tr>"}</tbody></table>
         <h2 style="margin-top:12px">Transcript</h2>
         <div class="transcript" style="height:260px">${(c.transcript || []).map((t) => `<div class="bubble ${t.role === "user" ? "user" : t.role === "agent" ? "agent" : "sys"}">${esc(t.text)}${t.interrupted ? " ⏸" : ""}</div>`).join("") || "<small>empty</small>"}</div>`;
       bindRecordingLinks($("call-detail"));
@@ -375,6 +381,71 @@
     }));
   }
   $("calls-refresh").onclick = refreshCalls;
+
+  // ------------------------------------------------------------------ ops (workers, capacity, deliveries, smoke)
+  let opsTimer = null;
+  function startOps() { refreshOps(); if (!opsTimer) opsTimer = setInterval(refreshOps, 5000); }
+  function stopOps() { if (opsTimer) { clearInterval(opsTimer); opsTimer = null; } }
+  $("ops-internal-token").value = localStorage.getItem("gvox.internalToken") || "";
+  $("ops-internal-token").onchange = () => localStorage.setItem("gvox.internalToken", $("ops-internal-token").value.trim());
+  const internalHeaders = () => ({ "X-Internal-Token": $("ops-internal-token").value.trim() });
+
+  async function refreshOps() {
+    try {
+      const [workers, cap] = await Promise.all([api("/v1/workers"), api("/v1/capacity")]);
+      $("ops-workers").innerHTML = workers.map((w) => `<tr><td><code>${esc(w.worker_id)}</code></td><td><small>${esc(w.worker_url)}</small></td>
+        <td>${w.active_sessions} / ${w.max_sessions}</td><td><span class="pill ${w.status === "live" ? (w.draining ? "ringing" : "completed") : "failed"}">${w.status}${w.draining ? " · draining" : ""}</span></td>
+        <td>${fmt(w.seconds_since_seen, 0)} s</td><td>${w.status === "live" && !w.draining ? `<button class="btn secondary" style="padding:3px 8px" data-drain="${esc(w.worker_id)}">Drain</button>` : ""}</td></tr>`).join("")
+        || "<tr><td colspan=6><small>no worker has registered (static MAX_CONCURRENT_CALLS pool in use)</small></td></tr>";
+      document.querySelectorAll("button[data-drain]").forEach((b) => (b.onclick = async () => {
+        if (!confirm(`Drain ${b.dataset.drain}? It stops taking new streams, finishes its calls, then exits.`)) return;
+        try { await api(`/v1/workers/${encodeURIComponent(b.dataset.drain)}/drain`, { method: "POST" }); $("ops-workers-status").textContent = `drain requested for ${b.dataset.drain}`; refreshOps(); }
+        catch (e) { $("ops-workers-status").textContent = e.message; }
+      }));
+      const carriers = Object.entries(cap.carriers || {}).map(([k, p]) => `<div>${esc(k)}</div><div>${p.free} / ${p.total} free · cps ${p.cps_free}</div>`).join("");
+      $("ops-capacity").innerHTML = `<div>engine</div><div><b>${cap.engine.free}</b> / ${cap.engine.total} free (active ${cap.active_calls}, accepting ${cap.accepting})</div>${carriers}`;
+      $("ops-updated").textContent = "updated " + new Date().toLocaleTimeString();
+    } catch (e) { $("ops-workers-status").textContent = "ops refresh failed: " + e.message; }
+    if (state.selectedCallId) refreshDeliveries();
+  }
+
+  async function refreshDeliveries() {
+    try {
+      const rows = await api(`/v1/calls/${state.selectedCallId}/deliveries`);
+      $("ops-deliveries").innerHTML = rows.map((r) => `<tr><td>${r.seq}</td><td>${esc(r.event)}</td><td><span class="pill ${r.status === "delivered" ? "completed" : r.status === "dead" ? "failed" : "ringing"}">${r.status}</span></td>
+        <td>${r.attempts}</td><td><small>${r.last_status_code ?? ""} ${esc((r.last_error || "").slice(0, 60))}</small></td>
+        <td><button class="btn secondary" style="padding:3px 8px" data-replay="${r.seq}">Replay</button></td></tr>`).join("") || "<tr><td colspan=6><small>no webhook deliveries (call has no webhook_url)</small></td></tr>";
+      document.querySelectorAll("button[data-replay]").forEach((b) => (b.onclick = async () => {
+        try { await api(`/v1/calls/${state.selectedCallId}/deliveries/${b.dataset.replay}/replay`, { method: "POST" }); $("ops-deliveries-status").textContent = `seq ${b.dataset.replay} queued again`; setTimeout(refreshDeliveries, 800); }
+        catch (e) { $("ops-deliveries-status").textContent = e.message; }
+      }));
+    } catch (e) { $("ops-deliveries-status").textContent = e.message; }
+  }
+
+  $("ops-smoke-run").onclick = async () => {
+    const btn = $("ops-smoke-run");
+    btn.disabled = true;
+    $("ops-smoke-body").innerHTML = "";
+    try {
+      const start = await api("/v1/test/telephony-smoke", { method: "POST", headers: internalHeaders(),
+        json: { calls: parseInt($("ops-smoke-calls").value, 10) || 3, script: $("ops-smoke-script").value.trim() || "yes" } });
+      $("ops-smoke-status").textContent = `running job ${start.job_id}…`;
+      const poll = setInterval(async () => {
+        try {
+          const job = await api(`/v1/test/telephony-smoke/${start.job_id}`, { headers: internalHeaders() });
+          if (job.status === "running") return;
+          clearInterval(poll); btn.disabled = false;
+          const r = job.result || {};
+          $("ops-smoke-status").textContent = job.status === "done"
+            ? `done: ${r.completed}/${r.calls} completed, dropped ${r.dropped}, client p50 ${fmt(r.client_p50)} s / p95 ${fmt(r.client_p95)} s, engine total p50 ${fmt(r.engine_total_p50)} s`
+            : `failed: ${esc(JSON.stringify(r).slice(0, 300))}`;
+          $("ops-smoke-body").innerHTML = (r.per_call || []).map((c) => `<tr><td>${c.index ?? ""}</td><td><code>${esc((c.call_id || "").slice(5))}</code></td><td>${esc(c.status || c.error || "")}</td>
+            <td>${c.user_turns ?? 0}↑ ${c.agent_turns ?? 0}↓</td><td>${fmt((c.client_latency_s || [])[0])}</td><td>${fmt((c.engine_total_s || [])[0])}</td><td>${c.ok ? "✓" : "✗"}</td></tr>`).join("");
+          refreshCalls();
+        } catch (e) { clearInterval(poll); btn.disabled = false; $("ops-smoke-status").textContent = e.message; }
+      }, 2000);
+    } catch (e) { btn.disabled = false; $("ops-smoke-status").textContent = "could not start: " + e.message + " (ENABLE_TEST_ENDPOINTS=true? internal token?)"; }
+  };
 
   // ------------------------------------------------------------------ agent JSON
   $("agent-load-example").onclick = () => { $("agent-json").value = JSON.stringify(state.example, null, 2); $("agent-status").textContent = "example loaded"; };
