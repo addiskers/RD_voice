@@ -138,3 +138,28 @@ class Capacity(BaseModel):
     max_concurrent_calls: int
     available: int
     accepting: bool
+
+
+class WorkerHeartbeat(BaseModel):
+    """Posted by every worker every few seconds (worker -> API)."""
+    worker_id: str
+    worker_url: str
+    version: str = ""
+    active_sessions: int = 0
+    max_sessions: int
+    draining: bool = False
+    started_at: Optional[str] = None
+    spool_pending: int = 0
+
+
+class WorkerOut(BaseModel):
+    worker_id: str
+    worker_url: str
+    version: str = ""
+    active_sessions: int = 0
+    max_sessions: int = 0
+    draining: bool = False
+    started_at: Optional[str] = None
+    status: str
+    seconds_since_seen: float
+    last_seen_at: str

@@ -16,6 +16,7 @@ INTERNAL = "test-internal"
 class FakePlivo(Carrier):
     name = "plivo"
     dials: list = []
+    hangups: list = []
 
     @property
     def from_number(self):
@@ -29,6 +30,7 @@ class FakePlivo(Carrier):
         return DialResult(provider_call_id="rq-1", raw={})
 
     async def hangup(self, provider_call_id):
+        self.hangups.append(provider_call_id)
         return True
 
 
@@ -43,6 +45,7 @@ def client(tmp_path):
         engine = app.state.engine
         engine.carriers._instances["plivo"] = FakePlivo(settings)
         FakePlivo.dials.clear()
+        FakePlivo.hangups.clear()
         yield c
 
 

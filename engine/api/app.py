@@ -24,7 +24,8 @@ from engine.api.webhooks import WebhookDispatcher
 from engine.carriers.registry import CarrierRegistry
 from engine.config import Settings, get_settings
 from engine.schemas.agent import AgentConfig, AgentVersionOut
-from engine.schemas.calls import CallCreate, CallCreated, CallRecord, CallStatus, Capacity, Direction
+from engine.schemas.calls import (CallCreate, CallCreated, CallRecord, CallStatus, Capacity, Direction,
+                                  WorkerHeartbeat, WorkerOut)
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +61,19 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
 
         async def _sweeper():
             import asyncio
+            tick = 0
             while True:
-                await asyncio.sleep(60)
+                await asyncio.sleep(10)
+                tick += 1
+                try:
+                    async with state.db.session() as session:
+                        n = await state.service.sweep_workers(session)
+                        if n:
+                            logger.warning("failed %d call(s) on dead worker(s)", n)
+                except Exception as e:
+                    logger.warning("worker sweep failed: %s", e)
+                if tick % 6:
+                    continue
                 try:
                     async with state.db.session() as session:
                         n = await state.service.sweep_stale(session)
@@ -119,6 +131,21 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
         available = max(0, settings.max_concurrent_calls - active)
         return Capacity(active_calls=active, max_concurrent_calls=settings.max_concurrent_calls,
                         available=available, accepting=available > 0)
+
+    # ----------------------------------------------------------------- workers
+    @app.post("/internal/workers/heartbeat", tags=["internal"], dependencies=[Depends(require_internal)])
+    async def worker_heartbeat(hb: WorkerHeartbeat, db: AsyncSession = Depends(db_session)):
+        await state.service.upsert_worker(db, hb)
+        return {"ok": True}
+
+    @app.get("/v1/workers", response_model=list[WorkerOut], tags=["ops"], dependencies=[Depends(require_api_key)])
+    async def list_workers(db: AsyncSession = Depends(db_session)):
+        return await state.service.list_workers(db)
+
+    @app.post("/v1/workers/{worker_id}/drain", tags=["ops"], dependencies=[Depends(require_api_key)])
+    async def drain_worker(worker_id: str, db: AsyncSession = Depends(db_session)):
+        ok = await state.service.drain_worker(db, worker_id)
+        return {"worker_id": worker_id, "draining": True, "worker_acknowledged": ok}
 
     # ----------------------------------------------------------------- agents
     @app.put("/v1/agents/{agent_id}", response_model=AgentVersionOut, tags=["agents"],
