@@ -25,6 +25,7 @@ from engine.config import Settings, get_settings
 from engine.schemas.agent import AgentConfig, Mode, ProviderRef
 from engine.worker.events import CallReporter
 from engine.worker.graph.runtime import GraphRuntime, NodeAgent
+from engine.worker.lifecycle import WorkerLifecycle
 from engine.worker.spool import EventSpool, replay_pending
 from engine.worker.graph.validate import compile_workflow
 from engine.worker.pipeline import make_session, prewarm_models
@@ -54,6 +55,9 @@ class WorkerState:
     prewarmed: dict[str, Any] = {}
     active: dict[str, CallHandle] = {}
     spools: dict[str, EventSpool] = {}      # per-call event spools still delivering (incl. replayed ones)
+    worker_id: str = ""
+    lifecycle: WorkerLifecycle
+    tasks: list[asyncio.Task] = []
 
     @classmethod
     def spool_pending(cls) -> int:
@@ -87,6 +91,21 @@ async def fetch_runtime(call_id: Optional[str], provider_call_id: Optional[str])
     return None
 
 
+async def report_refusal(call_id: Optional[str], provider_call_id: Optional[str], reason: str) -> None:
+    """Tell the API a stream was refused so it fails the call and drops the carrier leg (best effort)."""
+    if not call_id:
+        runtime = await fetch_runtime(None, provider_call_id)
+        call_id = runtime.get("call_id") if runtime else None
+    if not call_id:
+        return
+    try:
+        await W.http.post(f"{W.settings.internal_api_url.rstrip('/')}/internal/calls/{call_id}/events",
+                          json={"type": "refused", "data": {"reason": reason, "worker_id": W.worker_id}},
+                          headers={"X-Internal-Token": W.settings.internal_token}, timeout=5.0)
+    except Exception as e:
+        logger.warning("could not report refusal for %s: %s", call_id, e)
+
+
 # ----------------------------------------------------------------------------- one call
 async def run_call(runtime: dict[str, Any], *, session_factory, attach_io, hangup_transport,
                    direction: str = "outbound") -> CallHandle:
@@ -101,7 +120,7 @@ async def run_call(runtime: dict[str, Any], *, session_factory, attach_io, hangu
     state = CallState(call_id=call_id, variables=dict(runtime.get("variables") or {}))
     spool = EventSpool(settings, W.http, call_id, directory=settings.spool_dir, registry=W.spools)
     reporter = CallReporter(settings, W.http, call_id, worker_url=settings.worker_internal_url, spool=spool,
-                            worker_id=settings.worker_id)
+                            worker_id=W.worker_id)
     state.report_tool = reporter.report_tool
 
     tools_by_id = build_tools(cfg.tools, W.http)
@@ -212,6 +231,10 @@ def build_server():
 
     settings = get_settings()
     W.settings = settings
+    import socket
+    import time as _time
+    W.worker_id = settings.worker_id or socket.gethostname()
+    W.lifecycle = WorkerLifecycle(settings, None, worker_id=W.worker_id, version=__version__, started_at=_time.time())
     listen = f"{settings.worker_host}:{settings.worker_port}"
     from engine.worker.pipeline import register_plugins
     register_plugins()   # so `download-files` fetches VAD + turn-detector models for every shipped plugin
@@ -223,6 +246,7 @@ def build_server():
             app.add_routes([
                 web.get("/healthz", _healthz),
                 web.post("/internal/calls/{call_id}/control", _control),
+                web.post("/internal/drain", _drain),
                 web.get("/browser", browser_ws_handler),
             ])
             app.on_startup.append(_on_http_startup)     # runs inside the event loop, after prewarm
@@ -245,6 +269,12 @@ def build_server():
     async def entrypoint(ctx: JobContext):
         headers = {k.lower(): v for k, v in (ctx.extra_headers or {}).items()}
         call_id = headers.get("x-call-id")
+        refuse = W.lifecycle.should_refuse(len(W.active))
+        if refuse:
+            logger.warning("refusing stream (call_id=%s, provider uuid=%s): %s", call_id, ctx.plivo_call_uuid, refuse)
+            await report_refusal(call_id, ctx.plivo_call_uuid, refuse)
+            ctx.endpoint.hangup(ctx.session_id)
+            return
         runtime = await fetch_runtime(call_id, ctx.plivo_call_uuid)
         if runtime is None:
             logger.error("no engine call for stream (call_id=%s, provider uuid=%s); hanging up", call_id,
@@ -298,11 +328,31 @@ async def _on_http_startup(app: web.Application) -> None:
             logger.warning("replaying %d event spool(s) from a previous run", n)
     except Exception as e:
         logger.warning("spool replay failed: %s", e)
+    W.lifecycle.http = W.http
+    W.tasks.append(asyncio.create_task(W.lifecycle.heartbeat_loop(lambda: len(W.active), W.spool_pending),
+                                       name="gvox-heartbeat"))
+
+
+def _health_payload() -> dict[str, Any]:
+    return {"status": "draining" if W.lifecycle.draining else "ok", "version": __version__,
+            "worker_id": W.worker_id, "active_calls": len(W.active), "max_sessions": W.settings.worker_max_sessions,
+            "draining": W.lifecycle.draining, "spool_pending": W.spool_pending()}
 
 
 async def _healthz(request: web.Request) -> web.Response:
-    return web.json_response({"status": "ok", "version": __version__, "active_calls": len(W.active),
-                              "spool_pending": W.spool_pending()})
+    # 503 while draining so a proxy health check stops routing new streams here; live streams are unaffected
+    return web.json_response(_health_payload(), status=503 if W.lifecycle.draining else 200)
+
+
+async def _end_handle(handle: CallHandle, reason: str) -> None:
+    await handle.state.end(reason)
+
+
+async def _drain(request: web.Request) -> web.Response:
+    if request.headers.get("X-Internal-Token") != W.settings.internal_token:
+        return web.json_response({"error": "unauthorized"}, status=401)
+    W.lifecycle.start_drain(lambda: list(W.active.values()), _end_handle, W.spool_pending)
+    return web.json_response({"draining": True, "active": len(W.active), "spool_pending": W.spool_pending()})
 
 
 async def _control(request: web.Request) -> web.Response:

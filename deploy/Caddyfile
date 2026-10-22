@@ -1,0 +1,27 @@
+# Reverse proxy in front of the engine.
+#   :8080 -> API (HTTPS termination happens here in production: replace the port with your hostname)
+#   :8090 -> worker media WebSocket. Two upstreams make blue/green deploys possible: start worker-b,
+#            drain worker, and new streams land on worker-b because the draining worker answers 503 on /healthz.
+#   CARRIER_MEDIA_IPS: space-separated IPs/CIDRs allowed to open media streams (the carrier's published
+#            media ranges). Default lets everything in; set it before exposing :8090 publicly.
+{
+	auto_https off
+}
+
+:8080 {
+	reverse_proxy api:8080
+}
+
+:8090 {
+	@carriers remote_ip {$CARRIER_MEDIA_IPS}
+	handle @carriers {
+		reverse_proxy worker:8090 worker-b:8090 {
+			lb_policy first
+			health_uri /healthz
+			health_port 8091
+			health_interval 5s
+			health_timeout 2s
+		}
+	}
+	respond 403
+}

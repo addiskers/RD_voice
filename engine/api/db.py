@@ -126,14 +126,40 @@ class PhoneNumber(Base):
 MIGRATIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "migrations")
 
 
+BASELINE_REVISION = "0001_baseline"
+
+
+async def _schema_state(url: str) -> tuple[set[str], Optional[str]]:
+    """``(tables, current_revision)``; the revision is None when alembic_version is missing or empty."""
+    from sqlalchemy import inspect, text
+    engine = create_async_engine(url, future=True)
+    try:
+        async with engine.connect() as conn:
+            tables = set(await conn.run_sync(lambda c: inspect(c).get_table_names()))
+            revision = None
+            if "alembic_version" in tables:
+                revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+            return tables, revision
+    finally:
+        await engine.dispose()
+
+
 def run_migrations(url: str) -> None:
-    """Upgrade the schema at ``url`` to head (synchronous; call from a thread when a loop is running)."""
+    """Upgrade the schema at ``url`` to head (synchronous; call from a thread when a loop is running).
+
+    A database created by the pre-slice-1 ``create_all`` has the baseline tables but no ``alembic_version``:
+    it is stamped at the baseline first so the baseline migration does not try to recreate them."""
+    import asyncio
+
     from alembic import command
     from alembic.config import Config
 
     cfg = Config()
     cfg.set_main_option("script_location", MIGRATIONS_DIR)
     cfg.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
+    tables, revision = asyncio.run(_schema_state(url))
+    if revision is None and {"agent_versions", "calls", "numbers"} <= tables:
+        command.stamp(cfg, BASELINE_REVISION)
     command.upgrade(cfg, "head")
 
 
