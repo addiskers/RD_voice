@@ -12,16 +12,20 @@ from livekit.agents import AgentSession, llm as lk_llm
 
 from engine.config import Settings
 from engine.schemas.calls import CallMetrics, TranscriptTurn, TurnMetrics
+from engine.worker.spool import EventSpool
 
 logger = logging.getLogger(__name__)
 
 
 class CallReporter:
-    def __init__(self, settings: Settings, http: httpx.AsyncClient, call_id: str, *, worker_url: str = ""):
+    def __init__(self, settings: Settings, http: httpx.AsyncClient, call_id: str, *, worker_url: str = "",
+                 spool: Optional[EventSpool] = None, worker_id: str = ""):
         self.settings = settings
         self.http = http
         self.call_id = call_id
         self.worker_url = worker_url
+        self.worker_id = worker_id
+        self.spool = spool          # None = in-process observers only (tests); the worker always passes one
         self.started_at = time.monotonic()
         self.seq = 0
         self.transcript: list[TranscriptTurn] = []
@@ -33,8 +37,6 @@ class CallReporter:
         self._pending_user: dict[str, Any] = {}
         # in-process observers (e.g. the browser transport pushing live metrics to the page): fn(type, data)
         self.listeners: list[Any] = []
-        self._queue: asyncio.Queue = asyncio.Queue()
-        self._task: Optional[asyncio.Task] = None
         self._closed = False
         self.node_id: Optional[str] = None
         self.errors: list[str] = []
@@ -42,30 +44,15 @@ class CallReporter:
 
     # ------------------------------------------------------------------ transport
     def start(self) -> None:
-        if self._task is None:
-            self._task = asyncio.create_task(self._pump())
-
-    async def _pump(self) -> None:
-        url = f"{self.settings.internal_api_url.rstrip('/')}/internal/calls/{self.call_id}/events"
-        headers = {"X-Internal-Token": self.settings.internal_token}
-        while True:
-            item = await self._queue.get()
-            if item is None:
-                break
-            for attempt in range(3):
-                try:
-                    r = await self.http.post(url, json=item, headers=headers, timeout=5.0)
-                    if r.status_code < 500:
-                        break
-                except Exception as e:
-                    logger.warning("event post failed (%s) attempt %d: %s", item.get("type"), attempt + 1, e)
-                await asyncio.sleep(0.5 * (attempt + 1))
+        if self.spool is not None:
+            self.spool.start()
 
     def post(self, etype: str, data: dict[str, Any]) -> None:
         if self._closed:
             return
         self.seq += 1
-        self._queue.put_nowait({"type": etype, "seq": self.seq, "data": data})
+        if self.spool is not None:
+            self.spool.append({"type": etype, "seq": self.seq, "data": data})
         for fn in list(self.listeners):
             try:
                 fn(etype, data)
@@ -73,15 +60,13 @@ class CallReporter:
                 logger.debug("reporter listener failed: %s", e)
 
     async def close(self) -> None:
+        """No more events will be posted. Delivery continues in the spool until the API has acknowledged
+        everything (a draining worker waits for that before it exits)."""
         if self._closed:
             return
         self._closed = True
-        await self._queue.put(None)
-        if self._task:
-            try:
-                await asyncio.wait_for(self._task, timeout=10)
-            except Exception:
-                self._task.cancel()
+        if self.spool is not None:
+            self.spool.mark_ended()
 
     # ------------------------------------------------------------------ helpers
     def at(self) -> float:
@@ -218,7 +203,7 @@ class CallReporter:
                     pass
 
     def started(self) -> None:
-        self.post("started", {"worker_url": self.worker_url, "at": self.at()})
+        self.post("started", {"worker_url": self.worker_url, "worker_id": self.worker_id, "at": self.at()})
 
     def ended(self, reason: str, *, recording_path: Optional[str] = None, outcome: Optional[dict[str, Any]] = None,
               hangup_carrier: bool = False, error: Optional[str] = None) -> None:

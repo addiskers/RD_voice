@@ -25,6 +25,7 @@ from engine.config import Settings, get_settings
 from engine.schemas.agent import AgentConfig, Mode, ProviderRef
 from engine.worker.events import CallReporter
 from engine.worker.graph.runtime import GraphRuntime, NodeAgent
+from engine.worker.spool import EventSpool, replay_pending
 from engine.worker.graph.validate import compile_workflow
 from engine.worker.pipeline import make_session, prewarm_models
 from engine.worker.recording import Mixer, RecordingAudioOutput, TeeAudioInput
@@ -52,6 +53,11 @@ class WorkerState:
     http: httpx.AsyncClient
     prewarmed: dict[str, Any] = {}
     active: dict[str, CallHandle] = {}
+    spools: dict[str, EventSpool] = {}      # per-call event spools still delivering (incl. replayed ones)
+
+    @classmethod
+    def spool_pending(cls) -> int:
+        return sum(s.pending for s in list(cls.spools.values()))
 
 
 W = WorkerState()
@@ -93,7 +99,9 @@ async def run_call(runtime: dict[str, Any], *, session_factory, attach_io, hangu
     call_id = runtime["call_id"]
     cfg = AgentConfig.model_validate(runtime["agent"])
     state = CallState(call_id=call_id, variables=dict(runtime.get("variables") or {}))
-    reporter = CallReporter(settings, W.http, call_id, worker_url=settings.worker_internal_url)
+    spool = EventSpool(settings, W.http, call_id, directory=settings.spool_dir, registry=W.spools)
+    reporter = CallReporter(settings, W.http, call_id, worker_url=settings.worker_internal_url, spool=spool,
+                            worker_id=settings.worker_id)
     state.report_tool = reporter.report_tool
 
     tools_by_id = build_tools(cfg.tools, W.http)
@@ -217,6 +225,7 @@ def build_server():
                 web.post("/internal/calls/{call_id}/control", _control),
                 web.get("/browser", browser_ws_handler),
             ])
+            app.on_startup.append(_on_http_startup)     # runs inside the event loop, after prewarm
             return app
 
     server = GvoxWorkerServer(listen_addr=listen, host=settings.worker_host, port=settings.worker_http_port,
@@ -278,8 +287,22 @@ def build_server():
 
 
 # ----------------------------------------------------------------------------- control HTTP (API -> worker)
+async def _on_http_startup(app: web.Application) -> None:
+    """Loop-side start-up: replay event spools left by a previous worker process."""
+    if getattr(W, "http", None) is None:
+        W.http = httpx.AsyncClient(timeout=10.0)
+    os.makedirs(W.settings.spool_dir, exist_ok=True)
+    try:
+        n = await replay_pending(W.settings, W.http, W.settings.spool_dir, W.spools)
+        if n:
+            logger.warning("replaying %d event spool(s) from a previous run", n)
+    except Exception as e:
+        logger.warning("spool replay failed: %s", e)
+
+
 async def _healthz(request: web.Request) -> web.Response:
-    return web.json_response({"status": "ok", "version": __version__, "active_calls": len(W.active)})
+    return web.json_response({"status": "ok", "version": __version__, "active_calls": len(W.active),
+                              "spool_pending": W.spool_pending()})
 
 
 async def _control(request: web.Request) -> web.Response:
