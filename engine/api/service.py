@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from engine.api.capacity import CapacityView, CarrierPool, CpsBudget
 from engine.api.db import AgentVersion, Call, PhoneNumber, Worker, iso, utcnow
-from engine.api.webhooks import WebhookDispatcher
+from engine.api.webhooks import OutboxDispatcher
 from engine.carriers.base import CallbackInfo, CarrierError
 from engine.carriers.registry import CarrierRegistry
 from engine.config import Settings
@@ -53,7 +53,7 @@ def _aware(dt: Optional[datetime]) -> Optional[datetime]:
 
 
 class EngineService:
-    def __init__(self, settings: Settings, carriers: CarrierRegistry, dispatcher: WebhookDispatcher):
+    def __init__(self, settings: Settings, carriers: CarrierRegistry, dispatcher: OutboxDispatcher):
         self.settings = settings
         self.carriers = carriers
         self.dispatcher = dispatcher
@@ -263,7 +263,7 @@ class EngineService:
         )
         db.add(call)
         await db.commit()
-        await self._emit(call, EventType.call_queued, {"to": call.to_number, "provider": call.provider})
+        await self._emit(db, call, EventType.call_queued, {"to": call.to_number, "provider": call.provider})
 
         urls = self._callback_urls(carrier.name, call.id)
         try:
@@ -335,7 +335,7 @@ class EngineService:
         )
         db.add(call)
         await db.commit()
-        await self._emit(call, EventType.call_answered, {"direction": "inbound", "from": info.from_number,
+        await self._emit(db, call, EventType.call_answered, {"direction": "inbound", "from": info.from_number,
                                                           "to": info.to_number})
         return call
 
@@ -361,7 +361,7 @@ class EngineService:
             call.status = CallStatus.in_progress.value
             call.answered_at = call.answered_at or utcnow()
             await db.commit()
-            await self._emit(call, EventType.call_answered, {"from": info.from_number or call.from_number,
+            await self._emit(db, call, EventType.call_answered, {"from": info.from_number or call.from_number,
                                                               "to": info.to_number or call.to_number})
 
     async def on_ring(self, db: AsyncSession, call: Call, info: CallbackInfo) -> None:
@@ -371,7 +371,7 @@ class EngineService:
             call.status = CallStatus.ringing.value
             call.ringing_at = utcnow()
             await db.commit()
-            await self._emit(call, EventType.call_ringing, {})
+            await self._emit(db, call, EventType.call_ringing, {})
 
     async def on_hangup(self, db: AsyncSession, call: Call, info: CallbackInfo) -> None:
         if info.provider_call_id:
@@ -421,7 +421,7 @@ class EngineService:
             turns.append(data)
             call.transcript = turns
             await db.commit()
-            await self._emit(call, EventType.call_turn, data)
+            await self._emit(db, call, EventType.call_turn, data)
             return
         if etype == "tool":
             if data.get("record_outcome"):
@@ -429,10 +429,10 @@ class EngineService:
                 outcome.update(data.get("result") or {})
                 call.outcome = outcome
             await db.commit()
-            await self._emit(call, EventType.call_tool, data)
+            await self._emit(db, call, EventType.call_tool, data)
             return
         if etype == "transition":
-            await self._emit(call, EventType.call_transition, data)
+            await self._emit(db, call, EventType.call_transition, data)
             return
         if etype == "metrics":
             call.metrics = data
@@ -503,7 +503,7 @@ class EngineService:
         payload = record.model_dump(mode="json", by_alias=True)
         payload["recording_url"] = record.recording_url
         etype = EventType.call_failed if status == CallStatus.failed else EventType.call_ended
-        await self._emit(call, etype, payload)
+        await self._emit(db, call, etype, payload)
 
     async def hangup(self, db: AsyncSession, call: Call, reason: str = "api_hangup") -> None:
         if call.status in [s.value for s in TERMINAL_STATUSES]:
@@ -549,12 +549,11 @@ class EngineService:
             "status": call.status,
         }
 
-    async def _emit(self, call: Call, etype: str, data: dict[str, Any]) -> None:
+    async def _emit(self, db: AsyncSession, call: Call, etype: str, data: dict[str, Any]) -> None:
         if not call.webhook_url:
             return
-        event = self.dispatcher.build_event(call.id, etype, data, agent_id=call.agent_id,
-                                            agent_version=call.agent_version, metadata=call.call_metadata or {})
-        await self.dispatcher.emit(call.webhook_url, call.webhook_secret or self.settings.webhook_secret, event)
+        await self.dispatcher.enqueue(db, call, etype, data, agent_id=call.agent_id,
+                                      agent_version=call.agent_version, metadata=call.call_metadata or {})
 
 
 def now_iso() -> str:

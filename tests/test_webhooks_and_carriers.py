@@ -5,7 +5,7 @@ import time
 import httpx
 import pytest
 
-from engine.api.webhooks import WebhookDispatcher, sign, verify
+from engine.api.webhooks import sign, verify
 from engine.carriers.base import CallbackInfo
 from engine.carriers.plivo import PlivoCarrier
 from engine.carriers.vobiz import VobizCarrier
@@ -91,37 +91,3 @@ async def test_vobiz_dial_is_plivo_compatible_with_header_auth():
     assert seen["url"] == "https://api.vobiz.ai/api/v1/Account/V/Call/"
     assert seen["headers"]["x-auth-id"] == "V" and "authorization" not in seen["headers"]
     assert seen["body"]["to"] == "919876543210" and seen["body"]["from"] == "918000000001"
-
-
-@pytest.mark.asyncio
-async def test_dispatcher_delivers_in_order_and_retries():
-    received = []
-    attempts = {"n": 0}
-
-    async def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        attempts["n"] += 1
-        if body["seq"] == 2 and attempts["n"] == 2:
-            return httpx.Response(500)  # first attempt of seq 2 fails -> retried
-        ts = request.headers["x-gvox-timestamp"]
-        assert verify("s3", ts, request.content, request.headers["x-gvox-signature"])
-        received.append(body["seq"])
-        return httpx.Response(200)
-
-    d = WebhookDispatcher()
-    d._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    import engine.api.webhooks as wh
-    orig = wh.RETRY_DELAYS_S
-    wh.RETRY_DELAYS_S = (0.01, 0.01)
-    try:
-        for i in range(3):
-            ev = d.build_event("call_1", "call.turn" if i < 2 else "call.ended", {"i": i})
-            await d.emit("https://platform/hook", "s3", ev)
-        for _ in range(200):
-            if received == [1, 2, 3]:
-                break
-            await asyncio.sleep(0.01)
-    finally:
-        wh.RETRY_DELAYS_S = orig
-        await d.close()
-    assert received == [1, 2, 3]

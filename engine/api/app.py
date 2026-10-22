@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from engine import __version__
 from engine.api.db import Call, Database, PhoneNumber, iso
 from engine.api.service import EngineService, ServiceError
-from engine.api.webhooks import WebhookDispatcher
+from engine.api.webhooks import OutboxDispatcher
 from engine.carriers.registry import CarrierRegistry
 from engine.config import Settings, get_settings
 from engine.schemas.agent import AgentConfig, AgentVersionOut
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 class State:
     settings: Settings
     db: Database
-    dispatcher: WebhookDispatcher
+    dispatcher: OutboxDispatcher
     carriers: CarrierRegistry
     service: EngineService
 
@@ -50,7 +50,7 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
                             format="%(asctime)s %(levelname)s %(name)s: %(message)s")
         state.db = Database(settings.database_url)
         await state.db.init()
-        state.dispatcher = WebhookDispatcher()
+        state.dispatcher = OutboxDispatcher(state.db)
         await state.dispatcher.start()
         state.carriers = CarrierRegistry(settings)
         state.service = EngineService(settings, state.carriers, state.dispatcher)
@@ -264,6 +264,25 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
         call = await load_call(call_id, db)
         if not await _forward_control(call, {"action": "transfer", **body.model_dump()}):
             raise HTTPException(409, "call is not live on a worker")
+        return {"ok": True}
+
+    @app.get("/v1/calls/{call_id}/deliveries", tags=["calls"], dependencies=[Depends(require_api_key)])
+    async def list_deliveries(call_id: str, db: AsyncSession = Depends(db_session)):
+        from sqlalchemy import select
+        from engine.api.db import WebhookDelivery
+        await load_call(call_id, db)
+        rows = await db.scalars(select(WebhookDelivery).where(WebhookDelivery.call_id == call_id)
+                                .order_by(WebhookDelivery.seq))
+        return [{"id": r.id, "seq": r.seq, "event": r.event, "status": r.status, "attempts": r.attempts,
+                 "last_status_code": r.last_status_code, "last_error": r.last_error, "created_at": iso(r.created_at),
+                 "delivered_at": iso(r.delivered_at), "next_attempt_at": iso(r.next_attempt_at), "url": r.url}
+                for r in rows]
+
+    @app.post("/v1/calls/{call_id}/deliveries/{seq}/replay", tags=["calls"], dependencies=[Depends(require_api_key)])
+    async def replay_delivery(call_id: str, seq: int, db: AsyncSession = Depends(db_session)):
+        await load_call(call_id, db)
+        if not await state.dispatcher.replay(db, call_id, seq):
+            raise HTTPException(404, f"no delivery seq {seq} for call '{call_id}'")
         return {"ok": True}
 
     @app.get("/v1/calls/{call_id}/recording", tags=["calls"], dependencies=[Depends(require_api_key)])
