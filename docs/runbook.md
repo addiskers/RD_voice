@@ -114,6 +114,11 @@ minutes. The console's **Ops** tab has a button for the 3-call smoke (internal t
 | unsigned Plivo callbacks | `answer` and `hangup` both 403 |
 | single-prompt agent (gemini-2.5-flash-lite), 2 concurrent calls, 1 minute | client p50 ≈ 1.2 s, engine `total` p50 1.31 s on the 8 kHz path |
 
+The drills above ran before the whole-branch review; the review's fixes (outbox recovery after a crash,
+carrier-route isolation, capacity during drain, worker re-incarnation, per-worker data directories, drain
+grace, key rotation, log-only verification) are covered by `tests/test_review_fixes*.py` and were not
+re-drilled live.
+
 Not run locally (needs the deploy box): the 25-call × 10-minute load test (acceptance item 1), the Linux
 SIGTERM-to-drain entrypoint (`deploy/worker-entrypoint.sh`), the S3 recording backend, Postgres end to end
 (the suite and drills ran on SQLite), Vobiz callbacks, and the browser click-through of the Ops tab (its
