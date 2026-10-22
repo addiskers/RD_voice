@@ -126,12 +126,48 @@ def mulaw_frame_meansquare(mulaw: bytes) -> float:
     return sum(map(_MULAW_SQ.__getitem__, mulaw)) / n
 
 
-# --- generic PCM16 resampling (browser transport, recording mix) ------------------------------
+# --- generic PCM16 resampling (browser transport, recording) -----------------------------------
+class StreamResampler:
+    """Stateful mono PCM16 resampler (libsoxr through LiveKit, HIGH quality). Feed consecutive frames to
+    ``process`` and call ``flush`` once at the end; the filter state carries across frames so there are no
+    artefacts at 20 ms boundaries. Identity when the rates match."""
+
+    def __init__(self, src_rate: int, dst_rate: int):
+        self.src_rate = src_rate
+        self.dst_rate = dst_rate
+        self._rs = None
+        if src_rate != dst_rate:
+            try:
+                from livekit import rtc
+                self._rs = rtc.AudioResampler(src_rate, dst_rate, num_channels=1,
+                                              quality=rtc.AudioResamplerQuality.HIGH)
+            except Exception:   # pragma: no cover - LiveKit FFI unavailable: degrade to linear interpolation
+                self._rs = None
+                self._linear = True
+
+    def process(self, pcm: bytes) -> bytes:
+        if self.src_rate == self.dst_rate or not pcm:
+            return pcm
+        if self._rs is None:
+            return _resample_linear(pcm, self.src_rate, self.dst_rate)
+        return b"".join(bytes(f.data) for f in self._rs.push(bytearray(pcm)))
+
+    def flush(self) -> bytes:
+        if self._rs is None:
+            return b""
+        return b"".join(bytes(f.data) for f in self._rs.flush())
+
+
 def resample_pcm16(pcm: bytes, src_rate: int, dst_rate: int) -> bytes:
-    """Linear-interpolation resample of mono PCM16. Good enough for speech; symmetric ratios only
-    need to be integer-friendly, arbitrary ratios are handled by interpolation."""
+    """One-shot resample of mono PCM16 (a fresh StreamResampler: process + flush)."""
     if src_rate == dst_rate or not pcm:
         return pcm
+    rs = StreamResampler(src_rate, dst_rate)
+    return rs.process(pcm) + rs.flush()
+
+
+def _resample_linear(pcm: bytes, src_rate: int, dst_rate: int) -> bytes:
+    """Linear interpolation; only used when the soxr resampler cannot be created."""
     n = len(pcm) // 2
     if n == 0:
         return b""
@@ -155,6 +191,34 @@ def resample_pcm16(pcm: bytes, src_rate: int, dst_rate: int) -> bytes:
         b = samples[i + 1] if i + 1 < n else a
         out.append(int(a + (b - a) * frac))
     return struct.pack(f"<{len(out)}h", *out)
+
+
+# --- telephony degradation (test audio that sounds like a phone call) --------------------------
+def bandpass_pcm16(pcm: bytes, rate: int, low_hz: float = 300.0, high_hz: float = 3400.0, taps: int = 101) -> bytes:
+    """Windowed-sinc FIR band-pass (the PSTN voice band by default)."""
+    if _np is None:  # pragma: no cover
+        raise RuntimeError("numpy is required for bandpass_pcm16")
+    n = len(pcm) // 2
+    if n == 0:
+        return b""
+    x = _np.frombuffer(pcm[: n * 2], dtype=_np.int16).astype(_np.float64)
+    m = _np.arange(taps) - (taps - 1) / 2.0
+
+    def lowpass(fc: float):
+        h = _np.sinc(2 * fc / rate * m) * (2 * fc / rate)
+        return h * _np.hamming(taps)
+
+    h = lowpass(high_hz) - lowpass(low_hz)
+    y = _np.convolve(x, h, mode="same")
+    return _np.clip(y, -32768, 32767).astype(_np.int16).tobytes()
+
+
+def telephony_degrade(pcm16: bytes, rate: int) -> bytes:
+    """What a caller's audio looks like after the phone network: 300-3400 Hz, 8 kHz, G.711 mu-law.
+    Returns 8 kHz mono PCM16."""
+    narrow = bandpass_pcm16(pcm16, rate)
+    pcm8 = resample_pcm16(narrow, rate, CARRIER_RATE)
+    return mulaw_to_pcm16(pcm16_to_mulaw(pcm8, CARRIER_RATE))
 
 
 def pcm16_energy(pcm: bytes) -> float:

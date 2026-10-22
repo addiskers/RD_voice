@@ -350,7 +350,10 @@ def register_plugins() -> None:
 # ----------------------------------------------------------------------------- session
 def make_session(cfg: AgentConfig, settings: Settings, *, prewarmed: Optional[dict[str, Any]] = None,
                  tools: Optional[list[Any]] = None, mcp_servers: Optional[list[Any]] = None,
-                 userdata: Any = None, instructions_for_realtime: Optional[str] = None) -> AgentSession:
+                 userdata: Any = None, instructions_for_realtime: Optional[str] = None,
+                 input_sample_rate: int = 16000) -> AgentSession:
+    """``input_sample_rate``: what the transport feeds in (8000 on the carrier path, 16000 for the browser).
+    Passing it to the STT stops LiveKit's base class from upsampling phone audio before Deepgram."""
     prewarmed = prewarmed or {}
     language = cfg.language or settings.default_language
     common: dict[str, Any] = {
@@ -380,7 +383,7 @@ def make_session(cfg: AgentConfig, settings: Settings, *, prewarmed: Optional[di
                               options={k: v for k, v in stt_ref.options.items() if k == "language"})
     tts_ref = cfg.tts or VoiceRef(provider=settings.default_tts_provider, model=settings.default_tts_model,
                                   voice=settings.default_tts_voice or None, language=settings.default_tts_language)
-    stt_obj = build_stt(stt_ref, settings, language, vad=prewarmed.get("vad"))
+    stt_obj = build_stt(stt_ref, settings, language, vad=prewarmed.get("vad"), sample_rate=input_sample_rate)
     return AgentSession(
         stt=stt_obj,
         llm=build_llm(cfg.llm, settings),

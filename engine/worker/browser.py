@@ -37,12 +37,14 @@ class BrowserAudioInput(AudioInput):
         self._q: asyncio.Queue = asyncio.Queue()
         self._client_rate = client_rate
         self._closed = False
+        self._rs = codec.StreamResampler(client_rate, PIPELINE_RATE)    # stateful: no artefacts at frame edges
 
     def push_pcm(self, pcm: bytes) -> None:
         if self._closed or not pcm:
             return
-        if self._client_rate != PIPELINE_RATE:
-            pcm = codec.resample_pcm16(pcm, self._client_rate, PIPELINE_RATE)
+        pcm = self._rs.process(pcm)
+        if not pcm:
+            return
         self._q.put_nowait(rtc.AudioFrame(data=pcm, sample_rate=PIPELINE_RATE, num_channels=1,
                                           samples_per_channel=len(pcm) // 2))
 
@@ -65,6 +67,7 @@ class BrowserAudioOutput(AudioOutput):
         self._seg_started: Optional[float] = None
         self._pushed = 0.0
         self._finish_task: Optional[asyncio.Task] = None
+        self._rs: dict[int, codec.StreamResampler] = {}     # one stateful resampler per source rate
 
     async def capture_frame(self, frame: rtc.AudioFrame) -> None:
         await super().capture_frame(frame)
@@ -74,7 +77,12 @@ class BrowserAudioOutput(AudioOutput):
             self.on_playback_started(created_at=time.time())
         pcm = bytes(frame.data)
         if frame.sample_rate != self._client_rate:
-            pcm = codec.resample_pcm16(pcm, frame.sample_rate, self._client_rate)
+            rs = self._rs.get(frame.sample_rate)
+            if rs is None:
+                rs = self._rs[frame.sample_rate] = codec.StreamResampler(frame.sample_rate, self._client_rate)
+            pcm = rs.process(pcm)
+            if not pcm:
+                return
         self._pushed += frame.duration
         try:
             await self._send({"type": "audio", "data": base64.b64encode(pcm).decode("ascii")})

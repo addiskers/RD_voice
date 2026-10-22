@@ -292,8 +292,9 @@ def build_server():
             return
 
         def session_factory(cfg, state, mcp_servers):
+            # agent-transport feeds 8 kHz PCM (G.711 decoded); tell the STT so nothing upsamples phone audio
             return make_session(cfg, settings, prewarmed=ctx.proc.userdata if ctx.proc else W.prewarmed,
-                                mcp_servers=mcp_servers, userdata=state)
+                                mcp_servers=mcp_servers, userdata=state, input_sample_rate=8000)
 
         def attach_io(session, mixer):
             ctx.session = session                      # agent-transport wires its audio I/O + close hook
