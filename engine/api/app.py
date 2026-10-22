@@ -117,7 +117,7 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @app.exception_handler(ServiceError)
     async def _service_error(_: Request, exc: ServiceError):
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers or None)
 
     # ----------------------------------------------------------------- health / capacity
     @app.get("/health", tags=["ops"])
@@ -127,10 +127,11 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @app.get("/v1/capacity", response_model=Capacity, tags=["ops"], dependencies=[Depends(require_api_key)])
     async def capacity(db: AsyncSession = Depends(db_session)):
-        active = await state.service.active_count(db)
-        available = max(0, settings.max_concurrent_calls - active)
-        return Capacity(active_calls=active, max_concurrent_calls=settings.max_concurrent_calls,
-                        available=available, accepting=available > 0)
+        view = await state.service.capacity(db)
+        return Capacity(active_calls=view.legacy_active, max_concurrent_calls=view.engine_total,
+                        available=view.available, accepting=view.available > 0,
+                        engine={"free": view.engine_free, "total": view.engine_total},
+                        carriers={k: p.as_dict() for k, p in view.carriers.items()}, workers=view.workers)
 
     # ----------------------------------------------------------------- workers
     @app.post("/internal/workers/heartbeat", tags=["internal"], dependencies=[Depends(require_internal)])
@@ -316,6 +317,10 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
                 return Response(carrier.hangup_xml(), media_type="application/xml")
             await state.service.on_answer(db, call, info)
         else:
+            free, _total = await state.service.engine_slots(db)
+            if free <= 0:
+                await state.service.refuse_inbound(db, carrier.name, info)
+                return Response(carrier.busy_xml(), media_type="application/xml")
             call = await state.service.create_inbound_call(db, carrier.name, info)
             if call is None:
                 return Response(carrier.hangup_xml(), media_type="application/xml")

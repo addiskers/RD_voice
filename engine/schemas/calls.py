@@ -134,10 +134,15 @@ class CallCreated(BaseModel):
 
 
 class Capacity(BaseModel):
+    """Legacy flat fields are kept; ``engine`` / ``carriers`` / ``workers`` are the two-pool view."""
     active_calls: int
     max_concurrent_calls: int
     available: int
     accepting: bool
+    engine: dict[str, int] = Field(default_factory=dict, description="{free, total} conversation slots")
+    carriers: dict[str, dict[str, int]] = Field(default_factory=dict,
+                                                description="per provider: {free, total, cps_free}")
+    workers: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class WorkerHeartbeat(BaseModel):

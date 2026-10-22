@@ -100,6 +100,11 @@ class Carrier(ABC):
     def hangup_xml(self) -> str:
         return '<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Hangup/>\n</Response>'
 
+    def busy_xml(self, text: str = "All our lines are busy right now. Please try again in a few minutes.") -> str:
+        """Spoken refusal for an inbound call when the engine has no free slot."""
+        return ('<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n'
+                f"  <Speak>{escape(text)}</Speak>\n  <Hangup/>\n</Response>")
+
     def parse_callback(self, params: dict[str, Any], event: str) -> CallbackInfo:
         answer_time = _first(params, "AnswerTime", "answer_time")
         code = _first(params, "HangupCauseCode", "hangup_cause_code")

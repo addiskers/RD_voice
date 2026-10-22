@@ -15,6 +15,7 @@ from urllib.parse import quote
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from engine.api.capacity import CapacityView, CarrierPool, CpsBudget
 from engine.api.db import AgentVersion, Call, PhoneNumber, Worker, iso, utcnow
 from engine.api.webhooks import WebhookDispatcher
 from engine.carriers.base import CallbackInfo, CarrierError
@@ -33,9 +34,10 @@ ACTIVE_STATUSES = (CallStatus.queued.value, CallStatus.dialing.value, CallStatus
 
 
 class ServiceError(Exception):
-    def __init__(self, status_code: int, detail: Any):
+    def __init__(self, status_code: int, detail: Any, headers: Optional[dict[str, str]] = None):
         self.status_code = status_code
         self.detail = detail
+        self.headers = headers or {}
         super().__init__(str(detail))
 
 
@@ -55,6 +57,7 @@ class EngineService:
         self.settings = settings
         self.carriers = carriers
         self.dispatcher = dispatcher
+        self.cps = CpsBudget(settings.carrier_cps_limit)
 
     # ---------------------------------------------------------------- agents
     def validate_agent(self, cfg: AgentConfig) -> None:
@@ -100,6 +103,41 @@ class EngineService:
     async def active_count(self, db: AsyncSession) -> int:
         n = await db.scalar(select(func.count()).select_from(Call).where(Call.status.in_(ACTIVE_STATUSES)))
         return int(n or 0)
+
+    async def _count(self, db: AsyncSession, *statuses: str, provider: Optional[str] = None) -> int:
+        stmt = select(func.count()).select_from(Call).where(Call.status.in_(statuses))
+        if provider:
+            stmt = stmt.where(Call.provider == provider)
+        return int(await db.scalar(stmt) or 0)
+
+    async def engine_slots(self, db: AsyncSession) -> tuple[int, int]:
+        """``(free, total)`` conversation slots. With no worker ever registered (single-dev runs, tests) the
+        static ``MAX_CONCURRENT_CALLS`` is the pool; otherwise live, non-draining workers are."""
+        in_progress = await self._count(db, CallStatus.in_progress.value)
+        any_worker = await db.scalar(select(func.count()).select_from(Worker))
+        if not any_worker:
+            total = self.settings.max_concurrent_calls
+            return max(0, total - in_progress), total
+        workers = [w for w in await self.live_workers(db) if not w.draining]
+        total = sum(int(w.max_sessions or 0) for w in workers)
+        reported = sum(int(w.active_sessions or 0) for w in workers)
+        return max(0, total - max(reported, in_progress)), total
+
+    async def carrier_pool(self, db: AsyncSession, provider: str) -> CarrierPool:
+        total = self.settings.carrier_limit(provider)
+        used = await self._count(db, CallStatus.dialing.value, CallStatus.ringing.value, CallStatus.in_progress.value,
+                                 provider=provider)
+        return CarrierPool(total=total, free=max(0, total - used), cps_free=self.cps.available(provider))
+
+    async def capacity(self, db: AsyncSession) -> CapacityView:
+        free, total = await self.engine_slots(db)
+        pools = {}
+        for name in self.carriers.names():
+            if self.carriers.get(name).configured():
+                pools[name] = await self.carrier_pool(db, name)
+        workers = [w.model_dump(mode="json") for w in await self.list_workers(db)]
+        return CapacityView(engine_total=total, engine_free=free, carriers=pools, workers=workers,
+                            legacy_active=await self.active_count(db))
 
     # ---------------------------------------------------------------- workers
     async def upsert_worker(self, db: AsyncSession, hb: WorkerHeartbeat) -> Worker:
@@ -207,12 +245,11 @@ class EngineService:
 
     # ---------------------------------------------------------------- create outbound
     async def create_call(self, db: AsyncSession, req: CallCreate) -> Call:
-        if await self.active_count(db) >= self.settings.max_concurrent_calls:
-            raise ServiceError(429, "engine at capacity; retry later (see GET /v1/capacity)")
         cfg = await self.resolve_agent(db, req.agent)
         carrier = self.carriers.get(req.provider)
         if not carrier.configured():
             raise ServiceError(503, f"carrier '{carrier.name}' is not configured on this engine")
+        await self._check_capacity(db, carrier.name)
 
         call = Call(
             id=new_call_id(), status=CallStatus.queued.value, direction=Direction.outbound.value,
@@ -242,9 +279,43 @@ class EngineService:
             raise ServiceError(502, f"dial failed: {e}")
         return call
 
+    async def _check_capacity(self, db: AsyncSession, provider: str) -> None:
+        retry = {"Retry-After": "1"}
+        free, _total = await self.engine_slots(db)
+        if free <= 0:
+            raise ServiceError(429, {"reason": "engine_full", "detail": "no free conversation slot; see GET /v1/capacity"},
+                               headers=retry)
+        pool = await self.carrier_pool(db, provider)
+        if pool.free <= 0:
+            raise ServiceError(429, {"reason": "carrier_full", "detail": f"{provider} concurrent-call limit reached"},
+                               headers=retry)
+        if not self.cps.try_acquire(provider):
+            raise ServiceError(429, {"reason": "cps_exceeded", "detail": f"{provider} dials-per-second budget exhausted"},
+                               headers=retry)
+
     # ---------------------------------------------------------------- inbound
+    async def _lookup_number(self, db: AsyncSession, to_number: str) -> Optional[PhoneNumber]:
+        return await db.get(PhoneNumber, to_number) or await db.get(PhoneNumber, "+" + to_number.lstrip("+"))
+
+    async def refuse_inbound(self, db: AsyncSession, provider: str, info: CallbackInfo) -> Call:
+        """No free engine slot: record the refusal as a failed inbound call (webhook if the number has one)."""
+        number = await self._lookup_number(db, info.to_number)
+        call = Call(
+            id=new_call_id(), status=CallStatus.queued.value, direction=Direction.inbound.value, provider=provider,
+            to_number=info.to_number, from_number=info.from_number, provider_call_id=info.provider_call_id or None,
+            agent_id=number.agent_id if number else None, agent_version=number.agent_version if number else None,
+            call_metadata={"inbound": True}, webhook_url=number.webhook_url if number else None,
+            webhook_secret=(number.webhook_secret if number else None) or self.settings.webhook_secret,
+            record=False, max_duration_s=self.settings.call_max_seconds,
+        )
+        db.add(call)
+        await db.commit()
+        await self.finalize(db, call, status=CallStatus.failed, reason="capacity",
+                            error="no free conversation slot for an inbound call")
+        return call
+
     async def create_inbound_call(self, db: AsyncSession, provider: str, info: CallbackInfo) -> Optional[Call]:
-        number = await db.get(PhoneNumber, info.to_number) or await db.get(PhoneNumber, "+" + info.to_number.lstrip("+"))
+        number = await self._lookup_number(db, info.to_number)
         if number is None or not number.agent_id:
             logger.warning("inbound call to unknown/unrouted number %s", info.to_number)
             return None

@@ -188,6 +188,9 @@ def test_capacity_limit(tmp_path):
         app.state.engine.carriers._instances["plivo"] = FakePlivo(settings)
         body = {"to": "+919876543210", "agent": {"name": "s", "instructions": "x",
                                                  "llm": {"provider": "google", "model": "gemini-2.5-flash"}}}
-        assert c.post("/v1/calls", json=body, headers=H).status_code == 201
+        r = c.post("/v1/calls", json=body, headers=H)
+        assert r.status_code == 201
+        # a ringing call does not hold an engine slot; an answered one does
+        c.get(f"/carrier/plivo/answer?call_id={r.json()['call_id']}&CallUUID=cu-cap")
         assert c.post("/v1/calls", json=body, headers=H).status_code == 429
         assert c.get("/v1/capacity", headers=H).json()["accepting"] is False
