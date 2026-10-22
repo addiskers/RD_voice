@@ -14,10 +14,19 @@ from engine.api.db import Call, WebhookDelivery
 from engine.api.webhooks import OutboxDispatcher
 from test_capacity import BODY as CAP_BODY
 from test_capacity import _hb as _hb_cap
-from test_outbox import SECRET, _call, _dispatcher, _enqueue, _pump, _rows, tmp_db  # noqa: F401
+from test_outbox import SECRET, _call, _dispatcher, _enqueue, _pump, _rows
 from test_recording_storage import _insert_call_with_recording
 from test_security import _client as _sec_client
 from test_workers import _hb, _live_call_on_w1
+
+
+@pytest.fixture
+async def tmp_db(tmp_path):
+    from engine.api.db import Database
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'review.db'}")
+    await db.init()
+    yield db
+    await db.close()
 
 
 # ----------------------------------------------------------------------------- C1 / I2 / I3: outbox

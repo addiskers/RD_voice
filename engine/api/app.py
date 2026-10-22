@@ -76,12 +76,19 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
             except Exception as e:
                 logger.warning("recording retention sweep failed: %s", e)
 
+        import asyncio
+        stop = asyncio.Event()
+
         async def _sweeper():
-            import asyncio
+            # cooperative stop: a cancel mid-query wedges aiosqlite's worker thread and blocks shutdown
             tick = 0
             await _sweep_recordings()
             while True:
-                await asyncio.sleep(10)
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=10)
+                    return
+                except asyncio.TimeoutError:
+                    pass
                 tick += 1
                 if tick % 8640 == 0:           # once a day
                     await _sweep_recordings()
@@ -102,12 +109,15 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
                 except Exception as e:
                     logger.warning("stale sweep failed: %s", e)
 
-        import asyncio
         sweeper = asyncio.create_task(_sweeper())
         try:
             yield
         finally:
-            sweeper.cancel()
+            stop.set()
+            try:
+                await asyncio.wait_for(sweeper, timeout=15)
+            except (asyncio.TimeoutError, Exception):
+                sweeper.cancel()
             await state.dispatcher.close()
             await state.db.close()
 
@@ -437,6 +447,10 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
         ok = carrier.verify_callback(method=request.method, public_url=url, headers=request.headers,
                                      params=await _body_params(request), remote_ip=_client_ip(request))
         if not ok:
+            if settings.carrier_verify_log_only:
+                logger.warning("carrier %s callback signature FAILED verification (log-only mode: allowed) "
+                               "from %s: %s %s", carrier.name, _client_ip(request), request.method, url)
+                return
             raise HTTPException(403, "carrier signature invalid")
 
     @app.api_route("/carrier/{provider}/answer", methods=["GET", "POST"], tags=["carrier"],

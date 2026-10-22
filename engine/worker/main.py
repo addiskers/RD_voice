@@ -25,7 +25,7 @@ from engine.config import Settings, get_settings
 from engine.schemas.agent import AgentConfig, Mode, ProviderRef
 from engine.worker.events import CallReporter
 from engine.worker.graph.runtime import GraphRuntime
-from engine.worker.lifecycle import WorkerLifecycle
+from engine.worker.lifecycle import WorkerLifecycle, worker_dirs
 from engine.worker.spool import EventSpool, replay_pending
 from engine.worker.graph.validate import compile_workflow
 from engine.worker.pipeline import make_session, prewarm_models
@@ -57,6 +57,8 @@ class WorkerState:
     active: dict[str, CallHandle] = {}
     spools: dict[str, EventSpool] = {}      # per-call event spools still delivering (incl. replayed ones)
     worker_id: str = ""
+    spool_dir: str = ""
+    staging_dir: str = ""
     storage: Any = None
     lifecycle: WorkerLifecycle
     tasks: list[asyncio.Task] = []
@@ -153,7 +155,7 @@ async def run_call(runtime: dict[str, Any], *, session_factory, attach_io, hangu
     call_id = runtime["call_id"]
     cfg = AgentConfig.model_validate(runtime["agent"])
     state = CallState(call_id=call_id, variables=dict(runtime.get("variables") or {}))
-    spool = EventSpool(settings, W.http, call_id, directory=settings.spool_dir, registry=W.spools)
+    spool = EventSpool(settings, W.http, call_id, directory=W.spool_dir, registry=W.spools)
     reporter = CallReporter(settings, W.http, call_id, worker_url=settings.worker_internal_url, spool=spool,
                             worker_id=W.worker_id)
     state.report_tool = reporter.report_tool
@@ -175,7 +177,7 @@ async def run_call(runtime: dict[str, Any], *, session_factory, attach_io, hangu
     session = session_factory(cfg, state, mcp_servers or None)
     recorder: Optional[StereoRecorder] = None
     if runtime.get("record") and settings.record_calls and direction != "browser":
-        recorder = StereoRecorder(os.path.join(settings.recordings_dir, call_id),
+        recorder = StereoRecorder(os.path.join(W.staging_dir, call_id),
                                   max_seconds=int(runtime.get("max_duration_s") or settings.call_max_seconds) + 60)
     attach_io(session, recorder)
 
@@ -243,7 +245,7 @@ async def _store_recording(handle: CallHandle) -> Optional[str]:
     upload fails, so the recording is not lost)."""
     if handle.recorder is None:
         return None
-    path = handle.recorder.finish()
+    path = await asyncio.to_thread(handle.recorder.finish)     # interleaving minutes of audio must not stall other calls
     if not path:
         return None
     from datetime import datetime, timezone
@@ -301,6 +303,7 @@ def build_server():
     import socket
     import time as _time
     W.worker_id = settings.worker_id or socket.gethostname()
+    W.spool_dir, W.staging_dir = worker_dirs(settings, W.worker_id)
     W.lifecycle = WorkerLifecycle(settings, None, worker_id=W.worker_id, version=__version__, started_at=_time.time())
     listen = f"{settings.worker_host}:{settings.worker_port}"
     from engine.worker.pipeline import register_plugins
@@ -395,13 +398,12 @@ async def _on_http_startup(app: web.Application) -> None:
     """Loop-side start-up: replay event spools left by a previous worker process."""
     if getattr(W, "http", None) is None:
         W.http = httpx.AsyncClient(timeout=10.0)
-    os.makedirs(W.settings.spool_dir, exist_ok=True)
     W.storage = build_storage(W.settings)
-    stale = remove_stale_raw(W.settings.recordings_dir)
+    stale = remove_stale_raw(W.staging_dir)
     if stale:
         logger.warning("removed %d stale raw recording file(s) from a previous run", stale)
     try:
-        n = await replay_pending(W.settings, W.http, W.settings.spool_dir, W.spools)
+        n = await replay_pending(W.settings, W.http, W.spool_dir, W.spools)
         if n:
             logger.warning("replaying %d event spool(s) from a previous run", n)
     except Exception as e:

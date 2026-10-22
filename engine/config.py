@@ -101,6 +101,7 @@ class Settings(BaseSettings):
     worker_heartbeat_seconds: float = 5.0
     worker_dead_after_seconds: float = 20.0          # API marks a silent worker dead after this
     drain_timeout_seconds: int = 900                # draining worker hangs up what is left after this
+    drain_accept_grace_seconds: float = 12.0        # keep answering streams this long after drain starts (proxy health interval x2)
 
     # --- carrier limits ---------------------------------------------------------------------
     carrier_max_concurrent: str = "plivo=50,vobiz=50,enablex=50,fake=1000"   # per-provider concurrent calls
@@ -124,6 +125,7 @@ class Settings(BaseSettings):
     # --- security ---------------------------------------------------------------------------
     engine_encryption_key: str = ""                 # Fernet key; empty = plaintext at rest (dev only)
     carrier_verify_signatures: bool = True
+    carrier_verify_log_only: bool = False           # verify but only log failures (first day on a new carrier account)
     vobiz_callback_ips: str = ""                    # comma-separated IPs/CIDRs allowed to call /carrier/vobiz/*
 
     # --- test -------------------------------------------------------------------------------

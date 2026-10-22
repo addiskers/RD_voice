@@ -73,14 +73,14 @@ class _Track:
             self._f.seek(now * 2)
             self.cursor = now
 
-    def close(self) -> bytes:
+    def close(self) -> int:
+        """Flush the resamplers and close the file; returns the number of samples written."""
         tail = b"".join(rs.flush() for rs in self._rs.values())
         if tail and self.cursor < self._max:
             self._f.write(tail)
             self.cursor += len(tail) // 2
         self._f.close()
-        with open(self.path, "rb") as f:
-            return f.read()
+        return self.cursor
 
 
 class StereoRecorder:
@@ -92,6 +92,7 @@ class StereoRecorder:
         self._caller = _Track(base_path + RAW_SUFFIXES[0], self._t0, max_samples)
         self._agent = _Track(base_path + RAW_SUFFIXES[1], self._t0, max_samples)
         self._finished = False
+        self.interleave_chunk_frames = RATE           # 1 s of audio per chunk: bounded memory for long calls
 
     @property
     def frames_in(self) -> int:
@@ -125,42 +126,65 @@ class StereoRecorder:
             return None
         self._finished = True
         try:
-            left, right = self._caller.close(), self._agent.close()
+            n_left, n_right = self._caller.close(), self._agent.close()
         except Exception as e:
             logger.warning("failed to close recording tracks for %s: %s", self.base_path, e)
             return None
+        n = max(n_left, n_right)
+        path = self.base_path + ".wav" if n else None
+        try:
+            if n:
+                _interleave_files(self._caller.path, self._agent.path, path, n, self.interleave_chunk_frames)
+        except Exception as e:
+            logger.warning("failed to write recording %s: %s", self.base_path, e)
+            path = None
         for suffix in RAW_SUFFIXES:
             try:
                 os.remove(self.base_path + suffix)
             except OSError:
                 pass
-        if not left and not right:
-            return None
-        n = max(len(left), len(right)) // 2
+        return path
+
+
+def _interleave_files(left_path: str, right_path: str, out_path: str, frames: int, chunk_frames: int) -> None:
+    """Stream two mono raw PCM16 files (possibly missing or short) into one stereo WAV, chunk by chunk, so
+    memory stays bounded whatever the call length."""
+    def _open(p):
         try:
-            if _np is not None:
-                l_arr = _np.frombuffer(left.ljust(n * 2, b"\0"), dtype=_np.int16)
-                r_arr = _np.frombuffer(right.ljust(n * 2, b"\0"), dtype=_np.int16)
-                stereo = _np.stack([l_arr, r_arr], axis=1).reshape(-1).tobytes()
-            else:  # pragma: no cover
-                import array
-                l_arr = array.array("h", left.ljust(n * 2, b"\0"))
-                r_arr = array.array("h", right.ljust(n * 2, b"\0"))
-                out = array.array("h")
-                for a, b in zip(l_arr, r_arr):
-                    out.append(a)
-                    out.append(b)
-                stereo = out.tobytes()
-            path = self.base_path + ".wav"
-            with wave.open(path, "wb") as wf:
-                wf.setnchannels(2)
-                wf.setsampwidth(2)
-                wf.setframerate(RATE)
-                wf.writeframes(stereo)
-            return path
-        except Exception as e:
-            logger.warning("failed to write recording %s: %s", self.base_path, e)
+            return open(p, "rb")
+        except FileNotFoundError:
             return None
+
+    lf, rf = _open(left_path), _open(right_path)
+    try:
+        with wave.open(out_path, "wb") as wf:
+            wf.setnchannels(2)
+            wf.setsampwidth(2)
+            wf.setframerate(RATE)
+            done = 0
+            while done < frames:
+                want = min(chunk_frames, frames - done)
+                lb = lf.read(want * 2) if lf else b""
+                rb = rf.read(want * 2) if rf else b""
+                lb = lb.ljust(want * 2, b"\0")
+                rb = rb.ljust(want * 2, b"\0")
+                if _np is not None:
+                    stereo = _np.stack([_np.frombuffer(lb, dtype=_np.int16), _np.frombuffer(rb, dtype=_np.int16)],
+                                       axis=1).reshape(-1).tobytes()
+                else:  # pragma: no cover
+                    import array
+                    la, ra = array.array("h", lb), array.array("h", rb)
+                    out = array.array("h")
+                    for a, b in zip(la, ra):
+                        out.append(a)
+                        out.append(b)
+                    stereo = out.tobytes()
+                wf.writeframes(stereo)
+                done += want
+    finally:
+        for f in (lf, rf):
+            if f:
+                f.close()
 
 
 def remove_stale_raw(directory: str) -> int:

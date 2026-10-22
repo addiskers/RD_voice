@@ -25,6 +25,18 @@ from engine.config import Settings
 logger = logging.getLogger("gvox.worker.lifecycle")
 
 
+def worker_dirs(settings: Settings, worker_id: str) -> tuple[str, str]:
+    """``(spool_dir, recording_staging_dir)`` private to this worker. Workers share the data volume in
+    compose; without per-worker subdirectories a starting worker would delete its sibling's live raw
+    recordings and replay its sibling's spool."""
+    safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in worker_id) or "worker"
+    spool = os.path.join(settings.spool_dir, safe)
+    staging = os.path.join(settings.recordings_dir, "staging", safe)
+    os.makedirs(spool, exist_ok=True)
+    os.makedirs(staging, exist_ok=True)
+    return spool, staging
+
+
 def default_terminate() -> None:
     try:
         sys.stdout.flush()
@@ -49,13 +61,18 @@ class WorkerLifecycle:
         self.poll_interval_s = 1.0
         self.grace_after_timeout_s = 10.0
         self._drain_task: Optional[asyncio.Task] = None
+        self._drain_started_at: Optional[float] = None
 
     # ------------------------------------------------------------------ admission
     def should_refuse(self, active: int) -> Optional[str]:
-        if self.draining:
-            return "draining"
         if active >= self.settings.worker_max_sessions:
             return "capacity"
+        if self.draining:
+            # the proxy only notices the 503 on its next health check; refusing before that fails calls the
+            # carrier already routed here, so keep answering for a short grace window
+            started = self._drain_started_at or 0.0
+            if time.monotonic() - started >= self.settings.drain_accept_grace_seconds:
+                return "draining"
         return None
 
     # ------------------------------------------------------------------ heartbeat
@@ -92,6 +109,7 @@ class WorkerLifecycle:
     async def begin_drain(self, handles_fn: Callable[[], list], end_fn: Optional[Callable[[Any, str], Awaitable[None]]],
                           spool_pending_fn: Callable[[], int]) -> None:
         self.draining = True
+        self._drain_started_at = self._drain_started_at or time.monotonic()
         deadline = time.monotonic() + self.settings.drain_timeout_seconds
         logger.warning("worker %s draining: %d live call(s), %d spooled event(s); timeout %ds", self.worker_id,
                        len(handles_fn()), spool_pending_fn(), self.settings.drain_timeout_seconds)

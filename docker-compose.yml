@@ -40,7 +40,7 @@ services:
     volumes:
       - engine-data:/app/data
     depends_on: [api]
-    restart: unless-stopped
+    restart: on-failure          # a worker that exited after draining must not be restarted on the old image
     stop_grace_period: 16m      # > DRAIN_TIMEOUT_SECONDS: let live calls finish on SIGTERM
 
   # Standby worker for blue/green deploys: `docker compose --profile standby up -d worker-b`, then
@@ -58,7 +58,7 @@ services:
       - engine-data:/app/data
     depends_on: [api]
     profiles: ["standby"]
-    restart: unless-stopped
+    restart: on-failure          # a worker that exited after draining must not be restarted on the old image
     stop_grace_period: 16m
 
   caddy:

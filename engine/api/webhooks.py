@@ -95,12 +95,16 @@ class OutboxDispatcher:
         return n
 
     async def close(self) -> None:
+        """Stop cooperatively: cancelling the loop mid-query wedges aiosqlite's worker thread and then
+        ``engine.dispose()`` never returns, so the loop is asked to finish its pass and exit."""
         self._closed = True
+        self._wake.set()
         if self._task:
-            self._task.cancel()
             try:
-                await self._task
-            except (asyncio.CancelledError, Exception):
+                await asyncio.wait_for(self._task, timeout=15.0)
+            except asyncio.TimeoutError:
+                self._task.cancel()
+            except Exception:
                 pass
         if self._client and self._owns_client:
             await self._client.aclose()
@@ -115,6 +119,8 @@ class OutboxDispatcher:
             except Exception as e:  # never let the loop die
                 logger.warning("outbox pass failed: %s", e)
                 n = 0
+            if self._closed:
+                return
             if n:
                 continue
             self._wake.clear()
@@ -162,6 +168,8 @@ class OutboxDispatcher:
     # ------------------------------------------------------------------ consumer
     async def deliver_due(self) -> int:
         """One pass: claim every call's head-of-line row that is due, send them concurrently."""
+        if self._closed:
+            return 0
         now = utcnow()
         claimed: list[tuple[str, str, int, str, str, str]] = []
         async with self.db.session() as s:

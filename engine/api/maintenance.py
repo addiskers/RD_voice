@@ -4,34 +4,40 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from engine.api.crypto import SecretBox, encrypt_agent_config
+from engine.api.crypto import SecretBox
 from engine.api.db import AgentVersion, Call, Database, PhoneNumber
 
 
 async def encrypt_existing_rows(database_url: str, box: SecretBox) -> int:
     """Encrypt provider keys in agent versions and frozen call configs, and webhook secrets on calls and
-    numbers, wherever they are still plaintext. Idempotent."""
+    numbers, wherever they are still plaintext; re-encrypt already-encrypted values with the primary key
+    (rotation). Idempotent."""
+    from engine.api.crypto import _map_keys
+
+    def _settle(value):
+        return box.rotate(value) if box.is_encrypted(value) else box.encrypt(value)
+
     db = Database(database_url)
     await db.init()
     changed = 0
     try:
         async with db.session() as s:
             for row in await s.scalars(select(AgentVersion)):
-                enc = encrypt_agent_config(row.config or {}, box)
+                enc = _map_keys(row.config or {}, _settle)
                 if enc != row.config:
                     row.config = enc
                     changed += 1
             for call in await s.scalars(select(Call)):
-                enc = encrypt_agent_config(call.agent_config or {}, box)
+                enc = _map_keys(call.agent_config or {}, _settle)
                 if enc != call.agent_config:
                     call.agent_config = enc
                     changed += 1
-                if call.webhook_secret and not box.is_encrypted(call.webhook_secret):
-                    call.webhook_secret = box.encrypt(call.webhook_secret)
+                if call.webhook_secret and _settle(call.webhook_secret) != call.webhook_secret:
+                    call.webhook_secret = _settle(call.webhook_secret)
                     changed += 1
             for num in await s.scalars(select(PhoneNumber)):
-                if num.webhook_secret and not box.is_encrypted(num.webhook_secret):
-                    num.webhook_secret = box.encrypt(num.webhook_secret)
+                if num.webhook_secret and _settle(num.webhook_secret) != num.webhook_secret:
+                    num.webhook_secret = _settle(num.webhook_secret)
                     changed += 1
             await s.commit()
     finally:

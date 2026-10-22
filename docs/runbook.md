@@ -70,10 +70,14 @@ and are recorded as `failed` / `capacity`.
 - `ENGINE_ENCRYPTION_KEY` (a Fernet key: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`)
   encrypts bring-your-own provider keys inside agent configs and webhook secrets. Without it values are
   stored in plaintext and the API logs a warning at start.
-- Existing rows: `gvox-api encrypt-existing` after setting the key. Rotation: decrypt with the old key is
-  not automatic; set the new key, run `encrypt-existing` **before** removing the old one is not possible
-  with a single key, so rotate by exporting agents, changing the key, and re-importing.
+- Existing rows: `gvox-api encrypt-existing` after setting the key.
+- Rotation: `ENGINE_ENCRYPTION_KEY` accepts a comma-separated list; the first key encrypts and every key
+  decrypts. Set `ENGINE_ENCRYPTION_KEY=<new>,<old>`, restart the API, run `gvox-api encrypt-existing`
+  (it re-encrypts every value with the new key), then remove the old key.
 - `GET /v1/agents/{id}` returns keys masked (`****1234`); only the worker runtime payload carries them.
+  Saving a config that still contains masked keys keeps the previous version's real keys.
+- `CARRIER_VERIFY_LOG_ONLY=true` verifies callback signatures but only logs failures: use it for the first
+  day on a new carrier account to confirm the signature scheme before enforcing.
 
 ## Recordings
 
