@@ -98,4 +98,25 @@ minutes. The console's **Ops** tab has a button for the 3-call smoke (internal t
 
 ## Last local verification
 
-Filled in by the verification pass (see docs/superpowers/plans/2026-10-22-slice1-telephony-reliability.md, Task 14).
+2026-10-23, Windows 11 laptop, project venv, real vendor keys, SQLite, local recording storage, API with
+`ENABLE_TEST_ENDPOINTS=true`, one worker, `scripts/fake_carrier.py` as the carrier.
+
+| Drill | Result |
+|---|---|
+| 3 scripted calls (EO workflow, yes / no) with a webhook sink | 3/3 completed, 6 turns; client p50 **2.62 s**, p95 2.82 s; engine `total` p50 2.78 s; 10 deliveries per call, seq 1..10 contiguous, all delivered, HMAC verified by the sink |
+| API killed for ~30 s during 2 live calls, then restarted | worker spool retried until acknowledged; both calls `completed` / `workflow_end` with full transcripts; 10/10 deliveries each, contiguous, including `call.ended` |
+| worker killed during a live call | call `failed` / `worker_lost` 21 s after the kill; restarted worker removed the orphaned raw recording files |
+| drain with 2 live calls, third call attempted during drain | `/healthz` 503 while draining; third stream refused and its call `failed` / `draining`; both live calls finished (59 s, 62 s); worker exited by itself 52 s later |
+| unsigned Plivo callbacks | `answer` and `hangup` both 403 |
+| single-prompt agent (gemini-2.5-flash-lite), 2 concurrent calls, 1 minute | client p50 ≈ 1.2 s, engine `total` p50 1.31 s on the 8 kHz path |
+
+Not run locally (needs the deploy box): the 25-call × 10-minute load test (acceptance item 1), the Linux
+SIGTERM-to-drain entrypoint (`deploy/worker-entrypoint.sh`), the S3 recording backend, Postgres end to end
+(the suite and drills ran on SQLite), Vobiz callbacks, and the browser click-through of the Ops tab (its
+endpoints were exercised over HTTP).
+
+Found and fixed during verification: agent-transport 0.2.2 under LiveKit Agents 1.8 crashed every carrier
+call in `AgentSession.start` (`engine/worker/main.py::patch_stub_job`); Gemini rejects the LLM fallback
+adapter's default 5 s deadline (now 15 s); a call the carrier had already hung up was never finalized when
+its worker died (now `completed` / `worker_lost`); a Phase-0 SQLite file (no `alembic_version`) is stamped at
+the baseline before upgrading.

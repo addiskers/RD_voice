@@ -187,9 +187,13 @@ async def run_call(args, idx: int, utterances: list[list[bytes]], http: httpx.As
                     await asyncio.sleep(0.6)
                     frames = utterances[state["utt"]]
                     res["events"].append(f"speak#{state['utt'] + 1}@{now - t0:.1f}s")
-                    for fr in frames:
-                        await ws.send(media_frame(fr, stream_id))
-                        await asyncio.sleep(FRAME_S)
+                    try:
+                        for fr in frames:
+                            await ws.send(media_frame(fr, stream_id))
+                            await asyncio.sleep(FRAME_S)
+                    except websockets.ConnectionClosed:
+                        res["events"].append("stream closed by the engine")
+                        return
                     state["utt"] += 1
                     state["speech_end"] = time.monotonic()
                     state["agent_spoke_since_utterance"] = False
@@ -202,9 +206,14 @@ async def run_call(args, idx: int, utterances: list[list[bytes]], http: httpx.As
                         script_done_at = script_done_at or now
                         if now - script_done_at > 1.0:
                             break
-                await ws.send(media_frame(SILENCE_FRAME_ULAW, stream_id))
+                try:
+                    await ws.send(media_frame(SILENCE_FRAME_ULAW, stream_id))
+                except websockets.ConnectionClosed:
+                    res["events"].append(f"stream closed by the engine@{time.monotonic() - t0:.1f}s")
+                    return
                 next_tick += FRAME_S
                 await asyncio.sleep(max(0.0, next_tick - time.monotonic()))
+            res["script_finished"] = True
             try:
                 await ws.send(stop_frame(stream_id))
                 await ws.close()
@@ -222,7 +231,7 @@ async def run_call(args, idx: int, utterances: list[list[bytes]], http: httpx.As
             recv_task.cancel()
 
     duration = round(time.monotonic() - t0, 1)
-    if args.hangup_delay and state["utt"] < len(utterances) and not args.minutes:
+    if args.hangup_delay and not res.get("script_finished"):
         # the stream dropped before the script finished (worker died?): a real carrier keeps the call up
         # (keepCallAlive) until the caller hangs up; emulate that patience
         res["events"].append(f"stream dropped early; hangup in {args.hangup_delay}s")
@@ -243,8 +252,9 @@ async def run_call(args, idx: int, utterances: list[list[bytes]], http: httpx.As
                agent_turns=sum(1 for t in record.get("transcript", []) if t.get("role") == "agent"),
                user_turns=sum(1 for t in record.get("transcript", []) if t.get("role") == "user"),
                recording_url=record.get("recording_url"))
+    engine_ended = record.get("end_reason") in ("workflow_end", "agent_end_call", "closing_detected", "max_duration")
     res["ok"] = (record.get("status") == "completed" and not res["dropped"] and res["agent_audio_s"] > 0.5
-                 and (not utterances or res["user_turns"] >= 1))
+                 and (not utterances or res["user_turns"] >= 1) and (res.get("script_finished") or engine_ended))
     return res
 
 
