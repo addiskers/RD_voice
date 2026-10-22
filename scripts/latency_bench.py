@@ -2,7 +2,7 @@
 
     python scripts/latency_bench.py --runs 3 --tts cartesia --llm gemini-2.5-flash,groq:llama-3.3-70b-versatile --stt nova-3,flux-general-multi
 
-Each configuration runs scripts/browser_smoke.py (headless browser transport) and reads the call record from the
+Each configuration runs scripts/fake_carrier.py (telephony path, default) or scripts/browser_smoke.py (--path browser) and reads the call record from the
 engine API for the stage metrics. `total` = end of the caller's speech -> agent audio starts (user-perceived).
 """
 
@@ -31,13 +31,24 @@ def pct(values: list[float], p: float) -> float | None:
 
 
 def run_once(args, llm: str, stt: str, tts: str) -> dict:
-    cmd = [PY, os.path.join(HERE, "browser_smoke.py"), "--mode", "cascaded", "--tts", tts, "--llm", llm, "--stt", stt,
-           "--thinking", str(args.thinking), "--speak-wav", args.wav, "--seconds", str(args.seconds), "--json-only"]
-    out = subprocess.run(cmd, capture_output=True, text=True, timeout=args.seconds + 60)
+    if args.path == "telephony":
+        # the real worker media endpoint, 8 kHz mu-law, band-limited caller audio (scripts/fake_carrier.py)
+        cmd = [PY, os.path.join(HERE, "fake_carrier.py"), "--calls", "1", "--script", args.wav, "--tts", tts, "--llm", llm,
+               "--stt", stt, "--thinking", str(args.thinking), "--api", args.api, "--key", args.key, "--json"]
+        if args.internal_token:
+            cmd += ["--internal-token", args.internal_token]
+    else:
+        cmd = [PY, os.path.join(HERE, "browser_smoke.py"), "--mode", "cascaded", "--tts", tts, "--llm", llm, "--stt", stt,
+               "--thinking", str(args.thinking), "--speak-wav", args.wav, "--seconds", str(args.seconds), "--json-only"]
+    out = subprocess.run(cmd, capture_output=True, text=True, timeout=args.seconds + 120)
     line = [ln for ln in out.stdout.splitlines() if ln.startswith("{")]
     if not line:
         return {"ok": False, "error": (out.stderr or out.stdout)[-400:]}
     res = json.loads(line[-1])
+    if args.path == "telephony":
+        call = (res.get("per_call") or [{}])[0]
+        res = {"ok": bool(res.get("ok")), "call_id": call.get("call_id"), "reply_latency_s": call.get("client_latency_s"),
+               "events": call.get("events")}
     if res.get("call_id"):
         try:
             r = httpx.get(f"{args.api}/v1/calls/{res['call_id']}", headers={"Authorization": f"Bearer {args.key}"},
@@ -60,7 +71,12 @@ def main() -> int:
     ap.add_argument("--seconds", type=float, default=24.0)
     ap.add_argument("--api", default=os.environ.get("ENGINE_URL", "http://127.0.0.1:8080"))
     ap.add_argument("--key", default=os.environ.get("ENGINE_API_KEY", "dev-engine-key"))
+    ap.add_argument("--internal-token", default=os.environ.get("INTERNAL_TOKEN", ""))
+    ap.add_argument("--path", default="telephony", choices=["telephony", "browser"],
+                    help="telephony = fake carrier over the worker media endpoint (8 kHz); browser = 16 kHz test path")
     args = ap.parse_args()
+    if args.path == "telephony" and args.wav.endswith("user_yes.wav") and "tel_" not in os.path.basename(args.wav):
+        args.wav = os.path.join(HERE, "assets", "tel_user_yes.wav")
 
     configs = list(itertools.product(args.llm.split(","), args.stt.split(","), args.tts.split(",")))
     rows = []

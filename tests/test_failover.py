@@ -53,6 +53,7 @@ def test_per_agent_fallback_overrides_default():
 def test_llm_fallback_adapter_built():
     llm = build_llm(ProviderRef(provider="google", model="gemini-2.5-flash-lite"), S)
     assert isinstance(llm, lk_llm.FallbackAdapter) and len(llm._llm_instances) == 2
+    assert llm._attempt_timeout >= 10.0      # Gemini rejects request deadlines under 10 s (seen live 2026-10-23)
 
 
 def test_breaker_opens_and_recovers():

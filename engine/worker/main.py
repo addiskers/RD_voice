@@ -93,6 +93,39 @@ async def fetch_runtime(call_id: Optional[str], provider_call_id: Optional[str])
     return None
 
 
+def patch_stub_job(ctx: Any) -> None:
+    """agent-transport 0.2.2 gives LiveKit a stub ``job``; LiveKit Agents 1.8 reads attributes the stub lacks
+    (``enable_redaction`` crashed every carrier call in AgentSession.start). Fill in what is missing, never
+    override what the stub sets."""
+    def _fill(obj: Any, name: str, value: Any, *, force: bool = False) -> None:
+        if obj is None or (hasattr(obj, name) and not force):
+            return
+        try:
+            setattr(obj, name, value)
+        except Exception:  # frozen stub: nothing we can do, let LiveKit report it
+            pass
+
+    job = getattr(ctx, "job", None)
+    _fill(job, "enable_redaction", False)
+    _fill(job, "id", "stub")
+    _fill(job, "agent_name", "")
+    # LiveKit's own session recorder needs job_ctx.session_directory, which the facade lacks; the engine
+    # records calls itself (engine/worker/recording.py), so keep LiveKit's recorder off.
+    _fill(job, "enable_recording", False, force=True)
+    _fill(ctx, "_redaction_enabled", False)             # read by livekit.agents.telemetry on every turn
+    _fill(ctx, "_telemetry_state", None)                # read by otel usage metrics on every metrics event
+    _fill(ctx, "_primary_agent_session", None)
+    _fill(ctx, "inference_headers", {})                 # read by the OpenAI-compatible LLM plugin (Groq, vLLM)
+    _fill(ctx, "is_fake_job", lambda: False)
+
+
+def should_reject_fake(runtime: dict[str, Any], headers: dict[str, str], settings: Settings) -> bool:
+    """Streams for the test-only `fake` carrier must prove they come from our own test client."""
+    if (runtime.get("provider") or "") != "fake":
+        return False
+    return headers.get("x-test-token") != settings.internal_token
+
+
 async def report_refusal(call_id: Optional[str], provider_call_id: Optional[str], reason: str) -> None:
     """Tell the API a stream was refused so it fails the call and drops the carrier leg (best effort)."""
     if not call_id:
@@ -320,6 +353,10 @@ def build_server():
             logger.warning("call %s already terminal (%s); dropping stream", runtime["call_id"], runtime["status"])
             ctx.endpoint.hangup(ctx.session_id)
             return
+        if should_reject_fake(runtime, headers, settings):
+            logger.warning("call %s: fake-carrier stream without a valid X-Test-Token; dropping", runtime["call_id"])
+            ctx.endpoint.hangup(ctx.session_id)
+            return
 
         def session_factory(cfg, state, mcp_servers):
             # agent-transport feeds 8 kHz PCM (G.711 decoded); tell the STT so nothing upsamples phone audio
@@ -347,6 +384,7 @@ def build_server():
                                           "extra": {"dtmf": digit}})
 
         logger.info("call %s: starting session (mode=%s, node=%s)", handle.call_id, rt.cfg.mode.value, graph.start_id)
+        patch_stub_job(ctx)
         await handle.session.start(agent=rt.start_agent(handle.session), room=ctx.room)
 
     return server

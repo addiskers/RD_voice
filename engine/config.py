@@ -128,6 +128,7 @@ class Settings(BaseSettings):
 
     # --- test -------------------------------------------------------------------------------
     enable_test_endpoints: bool = False             # fake carrier + /v1/test/* endpoints
+    worker_media_url: str = "ws://127.0.0.1:8090"   # where the fake carrier opens media streams (never the proxy)
 
     log_level: str = "INFO"
 

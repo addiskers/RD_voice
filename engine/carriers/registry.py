@@ -8,6 +8,7 @@ from engine.config import Settings
 
 from .base import Carrier, CarrierError
 from .enablex import EnablexCarrier
+from .fake import FakeCarrier
 from .plivo import PlivoCarrier
 from .vobiz import VobizCarrier
 
@@ -15,6 +16,7 @@ _CARRIERS: dict[str, type[Carrier]] = {
     PlivoCarrier.name: PlivoCarrier,
     VobizCarrier.name: VobizCarrier,
     EnablexCarrier.name: EnablexCarrier,
+    FakeCarrier.name: FakeCarrier,          # test-only; configured() is false unless ENABLE_TEST_ENDPOINTS
 }
 
 

@@ -497,9 +497,57 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
         await db.commit()
         return state.service.runtime_payload(call)
 
+    # ----------------------------------------------------------------- test endpoints (ENABLE_TEST_ENDPOINTS)
+    if settings.enable_test_endpoints:
+        _mount_test_endpoints(app, settings, state, require_internal)
+
     # ----------------------------------------------------------------- test UI (static, local dev)
     _mount_ui(app, settings, state)
     return app
+
+
+def _mount_test_endpoints(app: FastAPI, settings: Settings, state: State, require_internal) -> None:
+    """Runs scripts/fake_carrier.py (3 scripted calls through the real worker endpoint) as a background job."""
+    import asyncio
+    import json
+    import sys
+    import uuid
+    from pathlib import Path
+
+    jobs: dict[str, dict[str, Any]] = {}
+    script = Path(__file__).resolve().parents[2] / "scripts" / "fake_carrier.py"
+
+    async def _run(job_id: str, calls: int, script_steps: str) -> None:
+        cmd = [sys.executable, str(script), "--api", f"http://127.0.0.1:{settings.api_port}", "--key", settings.engine_api_key,
+               "--internal-token", settings.internal_token, "--worker-ws", settings.worker_media_url,
+               "--calls", str(calls), "--script", script_steps, "--json"]
+        try:
+            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=600)
+            lines = [ln for ln in out.decode("utf-8", "replace").splitlines() if ln.startswith("{")]
+            result = json.loads(lines[-1]) if lines else {"error": (err or out).decode("utf-8", "replace")[-800:]}
+            jobs[job_id].update(status="done" if proc.returncode == 0 else "failed", result=result,
+                                stderr=err.decode("utf-8", "replace")[-2000:])
+        except Exception as e:
+            jobs[job_id].update(status="failed", result={"error": str(e)})
+
+    class SmokeIn(BaseModel):
+        calls: int = Field(default=3, ge=1, le=25)
+        script: str = "yes"
+
+    @app.post("/v1/test/telephony-smoke", tags=["test"], dependencies=[Depends(require_internal)])
+    async def start_smoke(body: SmokeIn):
+        job_id = uuid.uuid4().hex[:10]
+        jobs[job_id] = {"status": "running", "calls": body.calls, "script": body.script}
+        asyncio.create_task(_run(job_id, body.calls, body.script))
+        return {"job_id": job_id}
+
+    @app.get("/v1/test/telephony-smoke/{job_id}", tags=["test"], dependencies=[Depends(require_internal)])
+    async def smoke_status(job_id: str):
+        job = jobs.get(job_id)
+        if job is None:
+            raise HTTPException(404, "unknown job")
+        return job
 
 
 def _mount_ui(app: FastAPI, settings: Settings, state: State) -> None:

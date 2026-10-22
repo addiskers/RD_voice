@@ -54,6 +54,7 @@ def is_flux(ref: ProviderRef, settings: Settings) -> bool:
 
 
 _PROVIDER_ALIASES = {"gemini": "google", "eleven": "elevenlabs"}
+LLM_ATTEMPT_TIMEOUT_S = 15.0        # per-attempt deadline inside the LLM FallbackAdapter (Gemini needs >= 10 s)
 
 
 def provider_id(component: Any) -> str:
@@ -154,7 +155,8 @@ def build_llm(ref: ProviderRef, settings: Settings):
     try:
         fallback = _build_llm_single(ProviderRef(provider=fb), settings)
         from livekit.agents import llm as lk_llm
-        return lk_llm.FallbackAdapter([primary, fallback])
+        # the adapter's default 5 s attempt deadline is rejected by Gemini ("minimum allowed deadline is 10s")
+        return lk_llm.FallbackAdapter([primary, fallback], attempt_timeout=LLM_ATTEMPT_TIMEOUT_S)
     except Exception as e:
         logger.warning("LLM fallback '%s' unavailable: %s", fb, e)
         return primary

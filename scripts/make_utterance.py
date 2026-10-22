@@ -1,6 +1,9 @@
-"""Synthesize a spoken test utterance (16 kHz mono PCM16 WAV) with Gemini Live, for headless STT tests.
+"""Synthesize a spoken test utterance (16 kHz mono PCM16 WAV) with Gemini Live, for headless STT tests,
+or degrade an existing WAV to what the phone network delivers (300-3400 Hz, 8 kHz, G.711).
 
     python scripts/make_utterance.py "Yes, I can hear you. What is this call about?" scripts/assets/user_yes.wav
+    python scripts/make_utterance.py "text" scripts/assets/tel_user_x.wav --telephony     # synthesize, then degrade
+    python scripts/make_utterance.py --telephony scripts/assets/user_yes.wav scripts/assets/tel_user_yes.wav
 """
 
 from __future__ import annotations
@@ -10,18 +13,33 @@ import os
 import sys
 import wave
 
-from dotenv import load_dotenv
-from google import genai
-from google.genai import types
-
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from engine.worker.audio import resample_pcm16  # noqa: E402
+from engine.worker.audio import resample_pcm16, telephony_degrade  # noqa: E402
 
 
-async def main() -> int:
+def _write(path: str, pcm: bytes, rate: int) -> None:
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with wave.open(path, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(rate)
+        wf.writeframes(pcm)
+
+
+def degrade_file(src: str, dst: str) -> float:
+    with wave.open(src, "rb") as wf:
+        assert wf.getnchannels() == 1 and wf.getsampwidth() == 2, "need mono PCM16"
+        rate, pcm = wf.getframerate(), wf.readframes(wf.getnframes())
+    pcm8 = telephony_degrade(pcm, rate)
+    _write(dst, pcm8, 8000)
+    return len(pcm8) / 16000
+
+
+async def synthesize(text: str) -> bytes:
+    from dotenv import load_dotenv
+    from google import genai
+    from google.genai import types
     load_dotenv()
-    text = sys.argv[1] if len(sys.argv) > 1 else "Yes, I can hear you. What is this call about?"
-    out = sys.argv[2] if len(sys.argv) > 2 else "scripts/assets/user_yes.wav"
     client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
     config = types.LiveConnectConfig(
         response_modalities=[types.Modality.AUDIO],
@@ -43,14 +61,26 @@ async def main() -> int:
                         pcm24 += part.inline_data.data
             if sc and sc.turn_complete:
                 break
-    pcm16 = resample_pcm16(bytes(pcm24), 24000, 16000)
-    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
-    with wave.open(out, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(16000)
-        wf.writeframes(pcm16)
-    print(f"wrote {out}: {len(pcm16) / 32000:.2f}s")
+    return resample_pcm16(bytes(pcm24), 24000, 16000)
+
+
+async def main() -> int:
+    argv = [a for a in sys.argv[1:] if a != "--telephony"]
+    telephony = "--telephony" in sys.argv
+    if telephony and len(argv) == 2 and os.path.exists(argv[0]):
+        secs = degrade_file(argv[0], argv[1])
+        print(f"wrote {argv[1]}: {secs:.2f}s at 8 kHz (band-limited, G.711)")
+        return 0
+    text = argv[0] if argv else "Yes, I can hear you. What is this call about?"
+    out = argv[1] if len(argv) > 1 else "scripts/assets/user_yes.wav"
+    pcm16 = await synthesize(text)
+    if telephony:
+        pcm = telephony_degrade(pcm16, 16000)
+        _write(out, pcm, 8000)
+        print(f"wrote {out}: {len(pcm) / 16000:.2f}s at 8 kHz (band-limited, G.711)")
+    else:
+        _write(out, pcm16, 16000)
+        print(f"wrote {out}: {len(pcm16) / 32000:.2f}s")
     return 0 if pcm16 else 1
 
 
