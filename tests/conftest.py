@@ -41,7 +41,8 @@ def client(tmp_path):
     settings = Settings(_env_file=None, database_url=f"sqlite+aiosqlite:///{tmp_path / 'engine.db'}",
                         recordings_dir=str(tmp_path / "rec"), engine_api_key=KEY, internal_token=INTERNAL,
                         public_http_url="https://api.test", public_ws_url="wss://media.test",
-                        plivo_auth_id="x", plivo_auth_token="y", plivo_from_number="+918000000000")
+                        plivo_auth_id="x", plivo_auth_token="y", plivo_from_number="+918000000000",
+                        carrier_verify_signatures=False)   # unrelated tests post unsigned callbacks
     app = build_app(settings)
     with TestClient(app) as c:
         engine = app.state.engine

@@ -6,7 +6,11 @@ instead of basic auth, JSON bodies, numbers WITHOUT the '+' prefix, ``call_uuid`
 
 from __future__ import annotations
 
+import logging
+
 from .plivo import PlivoCarrier
+
+logger = logging.getLogger(__name__)
 
 
 class VobizCarrier(PlivoCarrier):
@@ -36,3 +40,15 @@ class VobizCarrier(PlivoCarrier):
 
     def _fmt_number(self, number: str) -> str:
         return number.lstrip("+")
+
+    def verify_callback(self, *, method, public_url, headers, params, remote_ip) -> bool:
+        """Vobiz: Plivo-style V3 signature when present, otherwise the configured IP allowlist."""
+        h = {k.lower(): v for k, v in headers.items()}
+        if h.get("x-plivo-signature-v3") and h.get("x-plivo-signature-v3-nonce"):
+            return super().verify_callback(method=method, public_url=public_url, headers=headers, params=params,
+                                           remote_ip=remote_ip)
+        from .signatures import ip_in_allowlist
+        if ip_in_allowlist(remote_ip, self.settings.vobiz_callback_ips):
+            return True
+        logger.warning("vobiz callback from %s rejected: no signature and not in VOBIZ_CALLBACK_IPS", remote_ip)
+        return False

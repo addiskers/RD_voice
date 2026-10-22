@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from engine.api.capacity import CapacityView, CarrierPool, CpsBudget
+from engine.api.crypto import SecretBox, decrypt_agent_config, encrypt_agent_config
 from engine.api.db import AgentVersion, Call, PhoneNumber, Worker, iso, utcnow
 from engine.api.webhooks import OutboxDispatcher
 from engine.carriers.base import CallbackInfo, CarrierError
@@ -53,11 +54,13 @@ def _aware(dt: Optional[datetime]) -> Optional[datetime]:
 
 
 class EngineService:
-    def __init__(self, settings: Settings, carriers: CarrierRegistry, dispatcher: OutboxDispatcher):
+    def __init__(self, settings: Settings, carriers: CarrierRegistry, dispatcher: OutboxDispatcher,
+                 box: Optional[SecretBox] = None):
         self.settings = settings
         self.carriers = carriers
         self.dispatcher = dispatcher
         self.cps = CpsBudget(settings.carrier_cps_limit)
+        self.box = box or SecretBox(settings.engine_encryption_key)
 
     # ---------------------------------------------------------------- agents
     def validate_agent(self, cfg: AgentConfig) -> None:
@@ -71,7 +74,8 @@ class EngineService:
         latest = await db.scalar(select(func.max(AgentVersion.version)).where(AgentVersion.agent_id == agent_id))
         version = int(latest or 0) + 1
         cfg = cfg.model_copy(update={"id": agent_id, "version": version})
-        row = AgentVersion(agent_id=agent_id, version=version, config=cfg.model_dump(mode="json"))
+        row = AgentVersion(agent_id=agent_id, version=version,
+                           config=encrypt_agent_config(cfg.model_dump(mode="json"), self.box))
         db.add(row)
         await db.commit()
         return row
@@ -254,9 +258,10 @@ class EngineService:
         call = Call(
             id=new_call_id(), status=CallStatus.queued.value, direction=Direction.outbound.value,
             provider=carrier.name, to_number=req.to, from_number=req.from_number or carrier.from_number,
-            agent_id=cfg.id, agent_version=cfg.version, agent_config=cfg.model_dump(mode="json"),
+            agent_id=cfg.id, agent_version=cfg.version,
+            agent_config=encrypt_agent_config(cfg.model_dump(mode="json"), self.box),
             variables=req.variables, call_metadata=req.metadata, webhook_url=req.webhook_url,
-            webhook_secret=req.webhook_secret or self.settings.webhook_secret,
+            webhook_secret=self.box.encrypt(req.webhook_secret or self.settings.webhook_secret),
             record=(req.record if req.record is not None else (cfg.record if cfg.record is not None
                                                                 else self.settings.record_calls)),
             max_duration_s=req.max_duration_s or cfg.max_duration_s or self.settings.call_max_seconds,
@@ -305,7 +310,7 @@ class EngineService:
             to_number=info.to_number, from_number=info.from_number, provider_call_id=info.provider_call_id or None,
             agent_id=number.agent_id if number else None, agent_version=number.agent_version if number else None,
             call_metadata={"inbound": True}, webhook_url=number.webhook_url if number else None,
-            webhook_secret=(number.webhook_secret if number else None) or self.settings.webhook_secret,
+            webhook_secret=self.box.encrypt((number.webhook_secret if number else None) or self.settings.webhook_secret),
             record=False, max_duration_s=self.settings.call_max_seconds,
         )
         db.add(call)
@@ -329,7 +334,8 @@ class EngineService:
             provider=provider, to_number=info.to_number, from_number=info.from_number,
             provider_call_id=info.provider_call_id or None, agent_id=cfg.id, agent_version=cfg.version,
             agent_config=cfg.model_dump(mode="json"), variables=variables, call_metadata={"inbound": True},
-            webhook_url=number.webhook_url, webhook_secret=number.webhook_secret or self.settings.webhook_secret,
+            webhook_url=number.webhook_url,
+            webhook_secret=self.box.encrypt(number.webhook_secret or self.settings.webhook_secret),
             record=(cfg.record if cfg.record is not None else self.settings.record_calls),
             max_duration_s=cfg.max_duration_s or self.settings.call_max_seconds, answered_at=utcnow(),
         )
@@ -570,7 +576,7 @@ class EngineService:
             "provider": call.provider,
             "to": call.to_number,
             "from": call.from_number,
-            "agent": call.agent_config,
+            "agent": decrypt_agent_config(call.agent_config or {}, self.box),     # the worker needs real keys
             "variables": call.variables or {},
             "metadata": call.call_metadata or {},
             "record": bool(call.record),

@@ -42,8 +42,8 @@
 
   async function loadConfig() {
     try {
-      state.config = await fetch(state.apiBase + "/ui/config.json").then((r) => r.json());
-      state.example = await fetch(state.apiBase + "/ui/example-agent").then((r) => r.json());
+      state.config = await api("/ui/config.json");          // needs the engine API key (it returns the browser key)
+      state.example = await api("/ui/example-agent");
       const badges = Object.entries(state.config.providers).map(([k, v]) => `<span class="badge ${v ? "on" : ""}">${k}${v ? " ✓" : ""}</span>`).join("");
       $("provider-badges").innerHTML = badges + (state.config.carriers.length ? state.config.carriers.map((c) => `<span class="badge on">carrier: ${c}</span>`).join("") : "");
       $("talk-mode").value = state.example.mode || "s2s";

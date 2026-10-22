@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 from .base import Carrier, CarrierError, DialResult
 
@@ -65,6 +65,19 @@ class PlivoCarrier(Carrier):
                    or data.get("CallUUID"))
         logger.info("%s dial fired to %s (handle %s)", self.name, to, call_id)
         return DialResult(provider_call_id=str(call_id) if call_id else None, raw=data)
+
+    def verify_callback(self, *, method: str, public_url: str, headers: Mapping[str, str],
+                        params: dict[str, Any], remote_ip: str) -> bool:
+        from .signatures import verify_plivo_v2, verify_plivo_v3
+        h = {k.lower(): v for k, v in headers.items()}
+        v3, nonce3 = h.get("x-plivo-signature-v3", ""), h.get("x-plivo-signature-v3-nonce", "")
+        if v3 and nonce3:
+            return verify_plivo_v3(self.auth_token, method, public_url, nonce3, v3, params)
+        v2, nonce2 = h.get("x-plivo-signature-v2", ""), h.get("x-plivo-signature-v2-nonce", "")
+        if v2 and nonce2:
+            return verify_plivo_v2(self.auth_token, public_url, nonce2, v2)
+        logger.warning("%s callback without a signature from %s", self.name, remote_ip)
+        return False
 
     async def hangup(self, provider_call_id: str) -> bool:
         if not provider_call_id:

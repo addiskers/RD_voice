@@ -249,6 +249,16 @@ async def finalize(handle: CallHandle, reason: str) -> None:
                 handle.reporter.at(), len(handle.reporter.transcript))
 
 
+def internal_token_middleware(token: str, protected: tuple[str, ...] = ("/metrics",)):
+    """aiohttp middleware: the listed paths require ``X-Internal-Token`` (agent-transport's /metrics is open)."""
+    @web.middleware
+    async def _mw(request: web.Request, handler):
+        if request.path in protected and request.headers.get("X-Internal-Token") != token:
+            return web.json_response({"error": "unauthorized"}, status=401)
+        return await handler(request)
+    return _mw
+
+
 # ----------------------------------------------------------------------------- carrier transport (agent-transport)
 def build_server():
     from agent_transport.audio_stream.livekit import AudioStreamServer, JobContext, JobProcess
@@ -274,6 +284,7 @@ def build_server():
                 web.get("/browser", browser_ws_handler),
             ])
             app.on_startup.append(_on_http_startup)     # runs inside the event loop, after prewarm
+            app.middlewares.append(internal_token_middleware(settings.internal_token))
             return app
 
     server = GvoxWorkerServer(listen_addr=listen, host=settings.worker_host, port=settings.worker_http_port,

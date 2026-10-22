@@ -17,7 +17,10 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import hmac
+
 from engine import __version__
+from engine.api.crypto import SecretBox, encrypt_agent_config, mask_agent_config
 from engine.api.db import Call, Database, PhoneNumber, iso
 from engine.api.service import EngineService, ServiceError
 from engine.api.webhooks import OutboxDispatcher
@@ -39,6 +42,7 @@ class State:
     carriers: CarrierRegistry
     service: EngineService
     storage: Storage
+    box: SecretBox
 
 
 def build_app(settings: Optional[Settings] = None) -> FastAPI:
@@ -52,10 +56,11 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
                             format="%(asctime)s %(levelname)s %(name)s: %(message)s")
         state.db = Database(settings.database_url)
         await state.db.init()
-        state.dispatcher = OutboxDispatcher(state.db)
+        state.box = SecretBox(settings.engine_encryption_key)
+        state.dispatcher = OutboxDispatcher(state.db, secret_resolver=state.box.decrypt)
         await state.dispatcher.start()
         state.carriers = CarrierRegistry(settings)
-        state.service = EngineService(settings, state.carriers, state.dispatcher)
+        state.service = EngineService(settings, state.carriers, state.dispatcher, box=state.box)
         os.makedirs(settings.recordings_dir, exist_ok=True)
         state.storage = build_storage(settings)
         logger.info("gvox-voice API %s up; carriers=%s; public=%s ws=%s", __version__,
@@ -117,7 +122,8 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
 
     async def require_api_key(authorization: str = Header(default="")):
         token = authorization.removeprefix("Bearer ").strip()
-        if not settings.engine_api_key or token != settings.engine_api_key:
+        if not settings.engine_api_key or not token or \
+                not hmac.compare_digest(token.encode("utf-8"), settings.engine_api_key.encode("utf-8")):
             raise HTTPException(401, "invalid or missing API key")
 
     async def require_internal(x_internal_token: str = Header(default="")):
@@ -129,6 +135,8 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
         if call is None:
             raise HTTPException(404, f"call '{call_id}' not found")
         return call
+
+    state.require_api_key = require_api_key      # reused by the UI mount
 
     @app.exception_handler(ServiceError)
     async def _service_error(_: Request, exc: ServiceError):
@@ -164,19 +172,20 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
         return {"worker_id": worker_id, "draining": True, "worker_acknowledged": ok}
 
     # ----------------------------------------------------------------- agents
+    def _agent_out(row) -> AgentVersionOut:
+        # provider keys are never returned in clear: masked to their last four characters
+        return AgentVersionOut(agent_id=row.agent_id, version=row.version, created_at=iso(row.created_at) or "",
+                               config=AgentConfig.model_validate(mask_agent_config(row.config, state.box)))
+
     @app.put("/v1/agents/{agent_id}", response_model=AgentVersionOut, tags=["agents"],
              dependencies=[Depends(require_api_key)])
     async def put_agent(agent_id: str, cfg: AgentConfig, db: AsyncSession = Depends(db_session)):
-        row = await state.service.put_agent(db, agent_id, cfg)
-        return AgentVersionOut(agent_id=row.agent_id, version=row.version, created_at=iso(row.created_at) or "",
-                               config=AgentConfig.model_validate(row.config))
+        return _agent_out(await state.service.put_agent(db, agent_id, cfg))
 
     @app.get("/v1/agents/{agent_id}", response_model=AgentVersionOut, tags=["agents"],
              dependencies=[Depends(require_api_key)])
     async def get_agent(agent_id: str, version: Optional[int] = None, db: AsyncSession = Depends(db_session)):
-        row = await state.service.get_agent(db, agent_id, version)
-        return AgentVersionOut(agent_id=row.agent_id, version=row.version, created_at=iso(row.created_at) or "",
-                               config=AgentConfig.model_validate(row.config))
+        return _agent_out(await state.service.get_agent(db, agent_id, version))
 
     @app.get("/v1/agents/{agent_id}/versions", tags=["agents"], dependencies=[Depends(require_api_key)])
     async def list_versions(agent_id: str, db: AsyncSession = Depends(db_session)):
@@ -214,7 +223,7 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
         row.agent_version = body.agent_version
         row.route_url = body.route_url
         row.webhook_url = body.webhook_url
-        row.webhook_secret = body.webhook_secret
+        row.webhook_secret = state.box.encrypt(body.webhook_secret) if body.webhook_secret else None
         await db.commit()
         base = settings.public_http_url.rstrip("/")
         return {"e164": e164, "provider": row.provider, "agent_id": row.agent_id, "agent_version": row.agent_version,
@@ -334,26 +343,55 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
             return False
 
     # ----------------------------------------------------------------- carrier webhooks
+    async def _body_params(request: Request) -> dict[str, Any]:
+        """POST body fields only (form or JSON); what Plivo includes in its V3 signature."""
+        if request.method != "POST":
+            return {}
+        ctype = request.headers.get("content-type", "")
+        try:
+            if "json" in ctype:
+                body = await request.json()
+                return dict(body) if isinstance(body, dict) else {}
+            form = await request.form()
+            return {k: v for k, v in form.items()}
+        except Exception:
+            return {}
+
     async def _params(request: Request) -> dict[str, Any]:
         params: dict[str, Any] = dict(request.query_params)
-        if request.method == "POST":
-            ctype = request.headers.get("content-type", "")
-            try:
-                if "json" in ctype:
-                    body = await request.json()
-                    if isinstance(body, dict):
-                        params.update(body)
-                else:
-                    form = await request.form()
-                    params.update({k: v for k, v in form.items()})
-            except Exception:
-                pass
+        params.update(await _body_params(request))
         return params
+
+    def _client_ip(request: Request) -> str:
+        """Remote address; the first X-Forwarded-For hop is trusted only when the direct peer is private
+        (the Caddy proxy in compose)."""
+        import ipaddress
+        host = request.client.host if request.client else ""
+        fwd = request.headers.get("x-forwarded-for", "")
+        if fwd:
+            try:
+                if ipaddress.ip_address(host).is_private or ipaddress.ip_address(host).is_loopback:
+                    return fwd.split(",")[0].strip()
+            except ValueError:
+                pass
+        return host
+
+    async def _verify_carrier(carrier, request: Request) -> None:
+        if not settings.carrier_verify_signatures:
+            return
+        url = settings.public_http_url.rstrip("/") + request.url.path
+        if request.url.query:
+            url += "?" + request.url.query
+        ok = carrier.verify_callback(method=request.method, public_url=url, headers=request.headers,
+                                     params=await _body_params(request), remote_ip=_client_ip(request))
+        if not ok:
+            raise HTTPException(403, "carrier signature invalid")
 
     @app.api_route("/carrier/{provider}/answer", methods=["GET", "POST"], tags=["carrier"],
                    response_class=Response)
     async def carrier_answer(provider: str, request: Request, db: AsyncSession = Depends(db_session)):
         carrier = state.carriers.get(provider)
+        await _verify_carrier(carrier, request)
         params = await _params(request)
         info = carrier.parse_callback(params, "answer")
         call_id = params.get("call_id")
@@ -376,6 +414,7 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
     @app.api_route("/carrier/{provider}/ring", methods=["GET", "POST"], tags=["carrier"])
     async def carrier_ring(provider: str, request: Request, db: AsyncSession = Depends(db_session)):
         carrier = state.carriers.get(provider)
+        await _verify_carrier(carrier, request)
         params = await _params(request)
         call = await db.get(Call, params.get("call_id", "")) if params.get("call_id") else None
         if call is not None:
@@ -385,6 +424,7 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
     @app.api_route("/carrier/{provider}/hangup", methods=["GET", "POST"], tags=["carrier"])
     async def carrier_hangup(provider: str, request: Request, db: AsyncSession = Depends(db_session)):
         carrier = state.carriers.get(provider)
+        await _verify_carrier(carrier, request)
         params = await _params(request)
         info = carrier.parse_callback(params, "hangup")
         call: Optional[Call] = None
@@ -449,8 +489,9 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
             raise HTTPException(422, "agent or agent_id required")
         call = Call(id=new_call_id(), status=CallStatus.in_progress.value, direction=Direction.browser.value,
                     provider="browser", to_number="browser", from_number=None, agent_id=cfg.id,
-                    agent_version=cfg.version, agent_config=cfg.model_dump(mode="json"), variables=body.variables,
-                    call_metadata=body.metadata, webhook_url=body.webhook_url, webhook_secret=settings.webhook_secret,
+                    agent_version=cfg.version, agent_config=encrypt_agent_config(cfg.model_dump(mode="json"), state.box),
+                    variables=body.variables, call_metadata=body.metadata, webhook_url=body.webhook_url,
+                    webhook_secret=state.box.encrypt(settings.webhook_secret),
                     record=False, max_duration_s=cfg.max_duration_s or settings.call_max_seconds, answered_at=utcnow())
         db.add(call)
         await db.commit()
@@ -476,7 +517,7 @@ def _mount_ui(app: FastAPI, settings: Settings, state: State) -> None:
     async def _root():
         return RedirectResponse("/ui/")
 
-    @app.get("/ui/config.json", include_in_schema=False)
+    @app.get("/ui/config.json", include_in_schema=False, dependencies=[Depends(state.require_api_key)])
     async def _ui_config():
         keys = {p: bool(settings.provider_key(p)) for p in
                 ("google", "deepgram", "cartesia", "elevenlabs", "sarvam", "anthropic", "openai", "groq")}
@@ -567,10 +608,53 @@ def _mount_ui(app: FastAPI, settings: Settings, state: State) -> None:
 app = build_app()
 
 
+def _cli():
+    import typer
+    cli = typer.Typer(invoke_without_command=True, add_completion=False, help="GlobalVox Voice Engine API")
+
+    @cli.callback()
+    def _root(ctx: typer.Context) -> None:
+        if ctx.invoked_subcommand is None:
+            serve()
+
+    @cli.command()
+    def serve() -> None:
+        """Run the API (default)."""
+        import uvicorn
+        s = get_settings()
+        uvicorn.run("engine.api.app:app", host=s.api_host, port=s.api_port, log_level=s.log_level.lower())
+
+    @cli.command()
+    def migrate() -> None:
+        """Upgrade the database schema to the latest migration and exit."""
+        from engine.api.db import run_migrations
+        run_migrations(get_settings().database_url)
+        typer.echo("database is at head")
+
+    @cli.command("encrypt-existing")
+    def encrypt_existing() -> None:
+        """Encrypt provider keys and webhook secrets that were stored before ENGINE_ENCRYPTION_KEY was set."""
+        import asyncio
+        from engine.api.maintenance import encrypt_existing_rows
+        s = get_settings()
+        if not s.engine_encryption_key:
+            raise typer.BadParameter("ENGINE_ENCRYPTION_KEY is not set")
+        n = asyncio.run(encrypt_existing_rows(s.database_url, SecretBox(s.engine_encryption_key)))
+        typer.echo(f"encrypted {n} value(s)")
+
+    @cli.command("copy-sqlite")
+    def copy_sqlite(from_path: str = typer.Option(..., "--from", help="path of the SQLite file to copy from")) -> None:
+        """Copy agents, numbers and calls from a Phase-0 SQLite file into DATABASE_URL."""
+        import asyncio
+        from engine.api.maintenance import copy_sqlite as _copy
+        n = asyncio.run(_copy(f"sqlite+aiosqlite:///{from_path}", get_settings().database_url))
+        typer.echo(f"copied {n} row(s)")
+
+    return cli
+
+
 def main() -> None:
-    import uvicorn
-    s = get_settings()
-    uvicorn.run("engine.api.app:app", host=s.api_host, port=s.api_port, log_level=s.log_level.lower())
+    _cli()()
 
 
 if __name__ == "__main__":
