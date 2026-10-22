@@ -76,7 +76,39 @@ class Call(Base):
     recording_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     cost_usd: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     ended_emitted: Mapped[bool] = mapped_column(Boolean, default=False)
-    last_seq: Mapped[int] = mapped_column(Integer, default=0)
+    last_seq: Mapped[int] = mapped_column(Integer, default=0)            # last worker event seq applied
+    webhook_seq: Mapped[int] = mapped_column(Integer, default=0)         # last outgoing webhook seq allocated
+    worker_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
+
+class Worker(Base):
+    __tablename__ = "workers"
+    worker_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    worker_url: Mapped[str] = mapped_column(Text)
+    version: Mapped[str] = mapped_column(String(32), default="")
+    active_sessions: Mapped[int] = mapped_column(Integer, default=0)
+    max_sessions: Mapped[int] = mapped_column(Integer, default=0)
+    draining: Mapped[bool] = mapped_column(Boolean, default=False)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    status: Mapped[str] = mapped_column(String(8), default="live")      # live | dead
+
+
+class WebhookDelivery(Base):
+    __tablename__ = "webhook_deliveries"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    call_id: Mapped[str] = mapped_column(String(40), index=True)
+    seq: Mapped[int] = mapped_column(Integer)
+    event: Mapped[str] = mapped_column(String(32))
+    payload_json: Mapped[str] = mapped_column(Text)
+    url: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(12), default="pending", index=True)   # pending|delivering|delivered|dead
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    last_status_code: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class PhoneNumber(Base):
@@ -91,8 +123,23 @@ class PhoneNumber(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+MIGRATIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "migrations")
+
+
+def run_migrations(url: str) -> None:
+    """Upgrade the schema at ``url`` to head (synchronous; call from a thread when a loop is running)."""
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config()
+    cfg.set_main_option("script_location", MIGRATIONS_DIR)
+    cfg.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
+    command.upgrade(cfg, "head")
+
+
 class Database:
     def __init__(self, url: str):
+        self.url = url
         if url.startswith("sqlite"):
             path = url.split("///", 1)[-1]
             if path and path != ":memory:":
@@ -101,8 +148,8 @@ class Database:
         self.session_factory = async_sessionmaker(self.engine, expire_on_commit=False, class_=AsyncSession)
 
     async def init(self) -> None:
-        async with self.engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+        import asyncio
+        await asyncio.to_thread(run_migrations, self.url)
 
     async def close(self) -> None:
         await self.engine.dispose()

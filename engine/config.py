@@ -95,7 +95,59 @@ class Settings(BaseSettings):
     default_realtime_model: str = "gemini-2.5-flash-native-audio-preview-12-2025"
     default_realtime_voice: str = "Aoede"
 
+    # --- workers ---------------------------------------------------------------------------
+    worker_id: str = ""                             # default: hostname
+    worker_max_sessions: int = 20                   # concurrent calls one worker process accepts
+    worker_heartbeat_seconds: float = 5.0
+    worker_dead_after_seconds: float = 20.0          # API marks a silent worker dead after this
+    drain_timeout_seconds: int = 900                # draining worker hangs up what is left after this
+
+    # --- carrier limits ---------------------------------------------------------------------
+    carrier_max_concurrent: str = "plivo=50,vobiz=50,enablex=50,fake=1000"   # per-provider concurrent calls
+    carrier_cps: str = "plivo=2,vobiz=2,enablex=2,fake=100"                 # per-provider dials per second
+
+    # --- failover ---------------------------------------------------------------------------
+    stt_fallback_provider: str = "sarvam"           # used when keyed and different from the primary; "" = off
+    llm_fallback_provider: str = "groq"
+
+    # --- recordings -------------------------------------------------------------------------
+    recording_storage: str = "local"                # local | s3
+    recording_s3_bucket: str = ""
+    recording_s3_endpoint: str = ""
+    recording_s3_region: str = "ap-south-1"
+    recording_s3_access_key: str = ""
+    recording_s3_secret_key: str = ""
+    recording_retention_days: int = 90
+    recording_url_mode: str = "stream"              # stream | signed
+    spool_dir: str = "./data/spool"
+
+    # --- security ---------------------------------------------------------------------------
+    engine_encryption_key: str = ""                 # Fernet key; empty = plaintext at rest (dev only)
+    carrier_verify_signatures: bool = True
+    vobiz_callback_ips: str = ""                    # comma-separated IPs/CIDRs allowed to call /carrier/vobiz/*
+
+    # --- test -------------------------------------------------------------------------------
+    enable_test_endpoints: bool = False             # fake carrier + /v1/test/* endpoints
+
     log_level: str = "INFO"
+
+    @staticmethod
+    def _parse_limits(spec: str) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for part in spec.split(","):
+            if "=" in part:
+                k, v = part.split("=", 1)
+                try:
+                    out[k.strip().lower()] = int(v.strip())
+                except ValueError:
+                    continue
+        return out
+
+    def carrier_limit(self, provider: str) -> int:
+        return self._parse_limits(self.carrier_max_concurrent).get(provider.lower(), 50)
+
+    def carrier_cps_limit(self, provider: str) -> int:
+        return self._parse_limits(self.carrier_cps).get(provider.lower(), 2)
 
     def provider_key(self, provider: str) -> str:
         """Engine-level API key for a model provider ('' when unset)."""
