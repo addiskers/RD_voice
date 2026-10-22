@@ -35,7 +35,9 @@ async def _call(db: Database, call_id: str, url: str = "https://platform/hook") 
 async def _enqueue(db: Database, disp: OutboxDispatcher, call_id: str, etype: str, data: dict) -> WebhookDelivery:
     async with db.session() as s:
         call = await s.get(Call, call_id)
-        return await disp.enqueue(s, call, etype, data)
+        row = await disp.enqueue(s, call, etype, data)      # the caller commits (together with its state change)
+        await s.commit()
+        return row
 
 
 async def _rows(db: Database, call_id: str) -> list[WebhookDelivery]:

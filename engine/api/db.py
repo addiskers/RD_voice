@@ -10,7 +10,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String, Text, UniqueConstraint
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -96,6 +96,7 @@ class Worker(Base):
 
 class WebhookDelivery(Base):
     __tablename__ = "webhook_deliveries"
+    __table_args__ = (UniqueConstraint("call_id", "seq", name="uq_webhook_deliveries_call_seq"),)
     id: Mapped[str] = mapped_column(String(40), primary_key=True)
     call_id: Mapped[str] = mapped_column(String(40), index=True)
     seq: Mapped[int] = mapped_column(Integer)

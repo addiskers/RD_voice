@@ -86,8 +86,9 @@ class Carrier(ABC):
     def verify_callback(self, *, method: str, public_url: str, headers: Mapping[str, str],
                         params: dict[str, Any], remote_ip: str) -> bool:
         """True when a carrier callback is genuine. ``public_url`` is the URL the carrier called (built from
-        PUBLIC_HTTP_URL), ``params`` the POST body fields (empty for GET). Base: accept everything."""
-        return True
+        PUBLIC_HTTP_URL), ``params`` the POST body fields (empty for GET). A carrier without a verifier fails
+        closed: it must implement this (or be used with CARRIER_VERIFY_SIGNATURES=false)."""
+        return False
 
     # --- protocol defaults (Plivo-style) ---------------------------------------------------
     def answer_xml(self, stream_url: str, extra_headers: Optional[dict[str, str]] = None) -> str:

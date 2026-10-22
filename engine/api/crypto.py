@@ -52,6 +52,11 @@ class SecretBox:
         return "****" + value[-4:] if len(value) >= 8 else "****"
 
 
+def is_masked_key(value: Any) -> bool:
+    """True for a value produced by ``SecretBox.mask`` (what GET /v1/agents returns)."""
+    return isinstance(value, str) and value.startswith("****") and len(value) <= 8
+
+
 def _map_keys(cfg: dict[str, Any], fn) -> dict[str, Any]:
     out = copy.deepcopy(cfg)
     for section in KEY_FIELDS:

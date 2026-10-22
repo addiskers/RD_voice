@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import httpx
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from engine.api.db import Call, Database, WebhookDelivery, utcnow
@@ -80,7 +80,19 @@ class OutboxDispatcher:
     async def start(self) -> None:
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=self._timeout)
+        await self.recover()
         self._task = asyncio.create_task(self._loop(), name="gvox-outbox")
+
+    async def recover(self) -> int:
+        """Rows claimed by a previous process that died mid-send go back to pending (one API process)."""
+        async with self.db.session() as s:
+            res = await s.execute(update(WebhookDelivery).where(WebhookDelivery.status == "delivering")
+                                  .values(status="pending", next_attempt_at=utcnow()))
+            await s.commit()
+            n = int(res.rowcount or 0)
+        if n:
+            logger.warning("outbox: re-queued %d delivery(ies) left in flight by a previous run", n)
+        return n
 
     async def close(self) -> None:
         self._closed = True
@@ -115,17 +127,24 @@ class OutboxDispatcher:
     async def enqueue(self, session: AsyncSession, call: Call, event_type: str, data: dict[str, Any], *,
                       agent_id: Optional[str] = None, agent_version: Optional[int] = None,
                       metadata: Optional[dict[str, Any]] = None) -> WebhookDelivery:
-        call.webhook_seq = int(call.webhook_seq or 0) + 1
-        event = build_event(call.id, event_type, data, seq=call.webhook_seq, agent_id=agent_id,
+        """Add the delivery row to ``session`` without committing: the caller commits it together with the
+        state change it announces, so a crash can never leave the state without its webhook. The seq is
+        allocated with an atomic UPDATE so concurrent emitters for one call never collide."""
+        await session.flush()                         # the call row must exist for the atomic increment
+        res = await session.execute(update(Call).where(Call.id == call.id)
+                                    .values(webhook_seq=func.coalesce(Call.webhook_seq, 0) + 1)
+                                    .returning(Call.webhook_seq))
+        seq = int(res.scalar_one())
+        call.webhook_seq = seq
+        event = build_event(call.id, event_type, data, seq=seq, agent_id=agent_id,
                             agent_version=agent_version, metadata=metadata)
         row = WebhookDelivery(
-            id=event.id, call_id=call.id, seq=event.seq, event=event_type,
+            id=event.id, call_id=call.id, seq=seq, event=event_type,
             payload_json=json.dumps(event.model_dump(mode="json"), separators=(",", ":"), ensure_ascii=False),
             url=call.webhook_url or "", status="pending", attempts=0, next_attempt_at=utcnow(),
         )
         session.add(row)
-        await session.commit()
-        self.wake()
+        await session.flush()
         return row
 
     async def replay(self, session: AsyncSession, call_id: str, seq: int) -> bool:
@@ -162,7 +181,13 @@ class OutboxDispatcher:
                 if res.rowcount != 1:
                     continue
                 call = await s.get(Call, row.call_id)
-                secret = self._resolve_secret(call.webhook_secret or "") if call else ""
+                try:
+                    secret = self._resolve_secret(call.webhook_secret or "") if call else ""
+                except Exception as e:       # an undecryptable secret kills this row, never the whole pass
+                    row.status = "dead"
+                    row.last_error = f"cannot resolve webhook secret: {type(e).__name__}: {e}"[:500]
+                    logger.error("webhook %s seq %d for %s dead: %s", row.event, row.seq, row.call_id, row.last_error)
+                    continue
                 claimed.append((row.id, row.url, row.seq, row.event, row.payload_json, secret))
             await s.commit()
         if not claimed:

@@ -128,7 +128,7 @@ def test_stale_sweep(client):
 def test_capacity_limit(tmp_path):
     settings = Settings(_env_file=None, database_url=f"sqlite+aiosqlite:///{tmp_path / 'c.db'}", engine_api_key=KEY,
                         internal_token=INTERNAL, max_concurrent_calls=1, plivo_auth_id="x", plivo_auth_token="y",
-                        plivo_from_number="+918000000000")
+                        plivo_from_number="+918000000000", carrier_verify_signatures=False)
     app = build_app(settings)
     with TestClient(app) as c:
         app.state.engine.carriers._instances["plivo"] = FakePlivo(settings)

@@ -37,4 +37,4 @@ class FakeCarrier(Carrier):
         return True
 
     def verify_callback(self, **kwargs) -> bool:
-        return True
+        return self.configured()        # only when ENABLE_TEST_ENDPOINTS=true; never a bypass in production

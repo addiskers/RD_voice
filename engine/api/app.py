@@ -416,6 +416,18 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
                 pass
         return host
 
+    def _carrier_or_404(provider: str):
+        """Only carriers configured on this engine have callback routes (an unconfigured one would otherwise
+        let its weaker verifier drive another carrier's calls)."""
+        from engine.carriers.base import CarrierError
+        try:
+            carrier = state.carriers.get(provider)
+        except CarrierError:
+            raise HTTPException(404, f"unknown carrier '{provider}'")
+        if not carrier.configured():
+            raise HTTPException(404, f"carrier '{provider}' is not configured on this engine")
+        return carrier
+
     async def _verify_carrier(carrier, request: Request) -> None:
         if not settings.carrier_verify_signatures:
             return
@@ -430,14 +442,14 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
     @app.api_route("/carrier/{provider}/answer", methods=["GET", "POST"], tags=["carrier"],
                    response_class=Response)
     async def carrier_answer(provider: str, request: Request, db: AsyncSession = Depends(db_session)):
-        carrier = state.carriers.get(provider)
+        carrier = _carrier_or_404(provider)
         await _verify_carrier(carrier, request)
         params = await _params(request)
         info = carrier.parse_callback(params, "answer")
         call_id = params.get("call_id")
         if call_id:
             call = await db.get(Call, call_id)
-            if call is None:
+            if call is None or call.provider != carrier.name:      # a call is only driven through its own carrier
                 return Response(carrier.hangup_xml(), media_type="application/xml")
             await state.service.on_answer(db, call, info)
         else:
@@ -453,17 +465,19 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @app.api_route("/carrier/{provider}/ring", methods=["GET", "POST"], tags=["carrier"])
     async def carrier_ring(provider: str, request: Request, db: AsyncSession = Depends(db_session)):
-        carrier = state.carriers.get(provider)
+        carrier = _carrier_or_404(provider)
         await _verify_carrier(carrier, request)
         params = await _params(request)
         call = await db.get(Call, params.get("call_id", "")) if params.get("call_id") else None
+        if call is not None and call.provider != carrier.name:
+            raise HTTPException(404, "call not found for this provider")
         if call is not None:
             await state.service.on_ring(db, call, carrier.parse_callback(params, "ring"))
         return {"ok": True}
 
     @app.api_route("/carrier/{provider}/hangup", methods=["GET", "POST"], tags=["carrier"])
     async def carrier_hangup(provider: str, request: Request, db: AsyncSession = Depends(db_session)):
-        carrier = state.carriers.get(provider)
+        carrier = _carrier_or_404(provider)
         await _verify_carrier(carrier, request)
         params = await _params(request)
         info = carrier.parse_callback(params, "hangup")
@@ -472,7 +486,10 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
             call = await db.get(Call, params["call_id"])
         if call is None and info.provider_call_id:
             from sqlalchemy import select
-            call = await db.scalar(select(Call).where(Call.provider_call_id == info.provider_call_id))
+            call = await db.scalar(select(Call).where(Call.provider_call_id == info.provider_call_id,
+                                                      Call.provider == carrier.name))
+        if call is not None and call.provider != carrier.name:
+            raise HTTPException(404, "call not found for this provider")
         if call is not None:
             await state.service.on_hangup(db, call, info)
         return {"ok": True}

@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from engine.api.capacity import CapacityView, CarrierPool, CpsBudget
-from engine.api.crypto import SecretBox, decrypt_agent_config, encrypt_agent_config
+from engine.api.crypto import KEY_FIELDS, SecretBox, decrypt_agent_config, encrypt_agent_config, is_masked_key
 from engine.api.db import AgentVersion, Call, PhoneNumber, Worker, iso, utcnow
 from engine.api.webhooks import OutboxDispatcher
 from engine.carriers.base import CallbackInfo, CarrierError
@@ -74,8 +74,17 @@ class EngineService:
         latest = await db.scalar(select(func.max(AgentVersion.version)).where(AgentVersion.agent_id == agent_id))
         version = int(latest or 0) + 1
         cfg = cfg.model_copy(update={"id": agent_id, "version": version})
-        row = AgentVersion(agent_id=agent_id, version=version,
-                           config=encrypt_agent_config(cfg.model_dump(mode="json"), self.box))
+        config = cfg.model_dump(mode="json")
+        # a config read back from the API carries masked keys ("****1234"); saving it must keep the real key
+        previous = (await db.get(AgentVersion, (agent_id, int(latest)))).config if latest else {}
+        for section in KEY_FIELDS:
+            block = config.get(section)
+            if isinstance(block, dict) and is_masked_key(block.get("api_key")):
+                prev_key = ((previous or {}).get(section) or {}).get("api_key")
+                if not prev_key:
+                    raise ServiceError(422, f"{section}.api_key is masked and no previous version holds a key for it")
+                block["api_key"] = prev_key
+        row = AgentVersion(agent_id=agent_id, version=version, config=encrypt_agent_config(config, self.box))
         db.add(row)
         await db.commit()
         return row
@@ -117,14 +126,19 @@ class EngineService:
     async def engine_slots(self, db: AsyncSession) -> tuple[int, int]:
         """``(free, total)`` conversation slots. With no worker ever registered (single-dev runs, tests) the
         static ``MAX_CONCURRENT_CALLS`` is the pool; otherwise live, non-draining workers are."""
-        in_progress = await self._count(db, CallStatus.in_progress.value)
         any_worker = await db.scalar(select(func.count()).select_from(Worker))
         if not any_worker:
+            in_progress = await self._count(db, CallStatus.in_progress.value)
             total = self.settings.max_concurrent_calls
             return max(0, total - in_progress), total
         workers = [w for w in await self.live_workers(db) if not w.draining]
+        counted_ids = [w.worker_id for w in workers]
         total = sum(int(w.max_sessions or 0) for w in workers)
         reported = sum(int(w.active_sessions or 0) for w in workers)
+        # calls on a draining or dead worker use that worker's slots, not the pool offered to new calls
+        stmt = (select(func.count()).select_from(Call).where(Call.status == CallStatus.in_progress.value)
+                .where((Call.worker_id.is_(None)) | (Call.worker_id.in_(counted_ids))))
+        in_progress = int(await db.scalar(stmt) or 0)
         return max(0, total - max(reported, in_progress)), total
 
     async def carrier_pool(self, db: AsyncSession, provider: str) -> CarrierPool:
@@ -170,19 +184,30 @@ class EngineService:
         if row is None:
             row = Worker(worker_id=hb.worker_id, worker_url=hb.worker_url)
             db.add(row)
+        started_at = None
+        if hb.started_at:
+            try:
+                started_at = _aware(datetime.fromisoformat(hb.started_at))
+            except ValueError:
+                started_at = None
+        previous = _aware(row.started_at)
+        # the same worker id with a newer start time is a restarted process (Docker restart policy): calls
+        # the previous incarnation was holding will never get their `ended` event from it
+        reincarnated = (previous is not None and started_at is not None and started_at > previous)
         row.worker_url = hb.worker_url
         row.version = hb.version or ""
         row.active_sessions = int(hb.active_sessions)
         row.max_sessions = int(hb.max_sessions)
         row.draining = bool(hb.draining)
-        if hb.started_at:
-            try:
-                row.started_at = datetime.fromisoformat(hb.started_at)
-            except ValueError:
-                pass
+        if started_at is not None:
+            row.started_at = started_at
         row.last_seen_at = utcnow()
         row.status = "live"
         await db.commit()
+        if reincarnated:
+            n = await self._finalize_calls_of_worker(db, row, before=started_at)
+            if n:
+                logger.warning("worker %s restarted; finalized %d call(s) of its previous run", row.worker_id, n)
         return row
 
     def _worker_out(self, w: Worker) -> WorkerOut:
@@ -217,23 +242,30 @@ class EngineService:
             await db.commit()
             logger.warning("worker %s (%s) is dead: no heartbeat for %.0fs", w.worker_id, w.worker_url,
                            self.settings.worker_dead_after_seconds)
-            # every call still waiting on this worker: live ones, and ones the carrier already hung up that
-            # were waiting for the worker's `ended` event (status completed, ended_emitted false)
-            calls = await db.scalars(select(Call).where(Call.ended_emitted.is_(False))
-                                     .where((Call.worker_id == w.worker_id) | (Call.worker_url == w.worker_url)))
-            for call in list(calls):
-                if call.status == CallStatus.completed.value:
-                    await self.finalize(db, call, status=CallStatus.completed, reason="worker_lost",
-                                        error="worker heartbeat lost before it reported the end of the call",
-                                        duration_s=call.duration_s)
-                elif call.status in ACTIVE_STATUSES:
-                    await self.finalize(db, call, status=CallStatus.failed, reason="worker_lost",
-                                        error="worker heartbeat lost")
-                    await self._hangup_carrier_leg(call)
-                else:
-                    continue
-                failed += 1
+            failed += await self._finalize_calls_of_worker(db, w)
         return failed
+
+    async def _finalize_calls_of_worker(self, db: AsyncSession, w: Worker, before: Optional[datetime] = None) -> int:
+        """Every call still waiting on this worker (or on its previous incarnation when ``before`` is set):
+        live ones fail as worker_lost and their carrier legs are hung up; ones the carrier already hung up
+        (status completed, waiting for the worker's `ended`) are completed as worker_lost."""
+        stmt = (select(Call).where(Call.ended_emitted.is_(False))
+                .where((Call.worker_id == w.worker_id) | (Call.worker_url == w.worker_url)))
+        if before is not None:
+            stmt = stmt.where(Call.created_at < before)
+        n = 0
+        for call in list(await db.scalars(stmt)):
+            if call.status == CallStatus.completed.value:
+                await self.finalize(db, call, status=CallStatus.completed, reason="worker_lost",
+                                    error="worker lost before it reported the end of the call",
+                                    duration_s=call.duration_s)
+            elif call.status in ACTIVE_STATUSES:
+                await self.finalize(db, call, status=CallStatus.failed, reason="worker_lost", error="worker lost")
+                await self._hangup_carrier_leg(call)
+            else:
+                continue
+            n += 1
+        return n
 
     async def drain_worker(self, db: AsyncSession, worker_id: str) -> bool:
         w = await db.get(Worker, worker_id)
@@ -297,7 +329,6 @@ class EngineService:
             max_duration_s=req.max_duration_s or cfg.max_duration_s or self.settings.call_max_seconds,
         )
         db.add(call)
-        await db.commit()
         await self._emit(db, call, EventType.call_queued, {"to": call.to_number, "provider": call.provider})
 
         urls = self._callback_urls(carrier.name, call.id)
@@ -370,7 +401,6 @@ class EngineService:
             max_duration_s=cfg.max_duration_s or self.settings.call_max_seconds, answered_at=utcnow(),
         )
         db.add(call)
-        await db.commit()
         await self._emit(db, call, EventType.call_answered, {"direction": "inbound", "from": info.from_number,
                                                           "to": info.to_number})
         return call
@@ -396,7 +426,6 @@ class EngineService:
         if call.status in (CallStatus.queued.value, CallStatus.dialing.value, CallStatus.ringing.value):
             call.status = CallStatus.in_progress.value
             call.answered_at = call.answered_at or utcnow()
-            await db.commit()
             await self._emit(db, call, EventType.call_answered, {"from": info.from_number or call.from_number,
                                                               "to": info.to_number or call.to_number})
 
@@ -406,7 +435,6 @@ class EngineService:
         if call.status in (CallStatus.queued.value, CallStatus.dialing.value):
             call.status = CallStatus.ringing.value
             call.ringing_at = utcnow()
-            await db.commit()
             await self._emit(db, call, EventType.call_ringing, {})
 
     async def on_hangup(self, db: AsyncSession, call: Call, info: CallbackInfo) -> None:
@@ -456,7 +484,6 @@ class EngineService:
             turns = list(call.transcript or [])
             turns.append(data)
             call.transcript = turns
-            await db.commit()
             await self._emit(db, call, EventType.call_turn, data)
             return
         if etype == "tool":
@@ -464,7 +491,6 @@ class EngineService:
                 outcome = dict(call.outcome or {})
                 outcome.update(data.get("result") or {})
                 call.outcome = outcome
-            await db.commit()
             await self._emit(db, call, EventType.call_tool, data)
             return
         if etype == "transition":
@@ -496,8 +522,10 @@ class EngineService:
             await db.commit()   # keep the worker's transcript/metrics even when the call is already terminal
             reason = data.get("reason") or "agent_ended"
             # a call that ended normally stays "completed" even if the worker logged recoverable provider
-            # errors along the way (they are kept in `error` for inspection); only an error-driven close fails it
-            status = CallStatus.failed if (data.get("error") and reason.startswith("session_error")) else CallStatus.completed
+            # errors along the way (they are kept in `error` for inspection); an error-driven close
+            # (session_error_*) or a component failure (stt_failed, ...) fails it
+            status = (CallStatus.failed if ((data.get("error") and reason.startswith("session_error")) or reason.endswith("_failed"))
+                      else CallStatus.completed)
             await self.finalize(db, call, status=status, reason=reason, error=data.get("error"),
                                 duration_s=data.get("duration_s"))
             # the worker asks us to hang up the carrier leg when the agent ended the call
@@ -515,14 +543,22 @@ class EngineService:
         active beyond its own max duration + grace. Keeps capacity accounting honest."""
         from datetime import timedelta
         now = utcnow()
-        rows = await db.scalars(select(Call).where(Call.status.in_(ACTIVE_STATUSES)))
+        rows = await db.scalars(select(Call).where(Call.ended_emitted.is_(False))
+                                .where(Call.status.in_(ACTIVE_STATUSES + (CallStatus.completed.value,))))
         n = 0
         for call in list(rows):
             created = _aware(call.created_at)
-            if now - created > timedelta(seconds=(call.max_duration_s or self.settings.call_max_seconds) + grace_s):
+            if now - created <= timedelta(seconds=(call.max_duration_s or self.settings.call_max_seconds) + grace_s):
+                continue
+            if call.status == CallStatus.completed.value:
+                # the carrier hung up long ago and the worker never reported `ended`: close it out as completed
+                await self.finalize(db, call, status=CallStatus.completed, reason=call.end_reason or "carrier_hangup",
+                                    error="no `ended` event from the worker within max_duration + grace",
+                                    duration_s=call.duration_s)
+            else:
                 await self.finalize(db, call, status=CallStatus.failed, reason="stale_timeout",
                                     error="no terminal event from the worker within max_duration + grace")
-                n += 1
+            n += 1
         return n
 
     async def sweep_recordings(self, db: AsyncSession, storage) -> int:
@@ -533,10 +569,14 @@ class EngineService:
         rows = await db.scalars(select(Call).where(Call.recording_path.is_not(None), Call.ended_at < cutoff))
         n = 0
         for call in list(rows):
-            if not is_storage_key(call.recording_path):
-                continue
             try:
-                await storage.delete(call.recording_path)
+                if is_storage_key(call.recording_path):
+                    await storage.delete(call.recording_path)
+                else:                                   # legacy local file or a failed-upload fallback
+                    import asyncio
+                    import os
+                    if os.path.exists(call.recording_path):
+                        await asyncio.to_thread(os.remove, call.recording_path)
             except Exception as e:
                 logger.warning("retention: could not delete %s: %s", call.recording_path, e)
                 continue
@@ -563,7 +603,6 @@ class EngineService:
         elif call.answered_at:
             call.duration_s = max(0.0, (_aware(call.ended_at) - _aware(call.answered_at)).total_seconds())
         call.ended_emitted = True
-        await db.commit()
         record = self.to_record(call)
         payload = record.model_dump(mode="json", by_alias=True)
         payload["recording_url"] = record.recording_url
@@ -615,10 +654,12 @@ class EngineService:
         }
 
     async def _emit(self, db: AsyncSession, call: Call, etype: str, data: dict[str, Any]) -> None:
-        if not call.webhook_url:
-            return
-        await self.dispatcher.enqueue(db, call, etype, data, agent_id=call.agent_id,
-                                      agent_version=call.agent_version, metadata=call.call_metadata or {})
+        """Queue a webhook (when the call has one) and commit it together with the pending state change."""
+        if call.webhook_url:
+            await self.dispatcher.enqueue(db, call, etype, data, agent_id=call.agent_id,
+                                          agent_version=call.agent_version, metadata=call.call_metadata or {})
+        await db.commit()
+        self.dispatcher.wake()
 
 
 def now_iso() -> str:

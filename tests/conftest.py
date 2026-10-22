@@ -42,7 +42,8 @@ def client(tmp_path):
                         recordings_dir=str(tmp_path / "rec"), engine_api_key=KEY, internal_token=INTERNAL,
                         public_http_url="https://api.test", public_ws_url="wss://media.test",
                         plivo_auth_id="x", plivo_auth_token="y", plivo_from_number="+918000000000",
-                        carrier_verify_signatures=False)   # unrelated tests post unsigned callbacks
+                        carrier_verify_signatures=False,   # unrelated tests post unsigned callbacks
+                        carrier_cps="plivo=100")           # the CPS budget has its own tests (test_capacity)
     app = build_app(settings)
     with TestClient(app) as c:
         engine = app.state.engine
