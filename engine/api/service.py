@@ -489,6 +489,27 @@ class EngineService:
                 n += 1
         return n
 
+    async def sweep_recordings(self, db: AsyncSession, storage) -> int:
+        """Delete recordings older than the retention window (storage objects only; local legacy files stay)."""
+        from datetime import timedelta
+        from engine.storage import is_storage_key
+        cutoff = utcnow() - timedelta(days=self.settings.recording_retention_days)
+        rows = await db.scalars(select(Call).where(Call.recording_path.is_not(None), Call.ended_at < cutoff))
+        n = 0
+        for call in list(rows):
+            if not is_storage_key(call.recording_path):
+                continue
+            try:
+                await storage.delete(call.recording_path)
+            except Exception as e:
+                logger.warning("retention: could not delete %s: %s", call.recording_path, e)
+                continue
+            call.recording_path = None
+            n += 1
+        if n:
+            await db.commit()
+        return n
+
     # ---------------------------------------------------------------- terminal
     async def fail_call(self, db: AsyncSession, call: Call, *, reason: str, error: str) -> None:
         await self.finalize(db, call, status=CallStatus.failed, reason=reason, error=error)

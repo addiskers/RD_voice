@@ -10,7 +10,7 @@ from engine.schemas.calls import TurnMetrics
 from engine.worker.breaker import BREAKER, ProviderBreaker
 from engine.worker.pipeline import build_llm, build_stt, make_session, provider_id, provider_labels
 from engine.worker.tools import CallState
-from test_api import H, HI, client  # noqa: F401
+from conftest import H, HI
 
 S = Settings(_env_file=None, deepgram_api_key="d", sarvam_api_key="s", google_api_key="g", groq_api_key="q",
              cartesia_api_key="c", openai_api_key="o")

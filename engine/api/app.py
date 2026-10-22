@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +23,7 @@ from engine.api.service import EngineService, ServiceError
 from engine.api.webhooks import OutboxDispatcher
 from engine.carriers.registry import CarrierRegistry
 from engine.config import Settings, get_settings
+from engine.storage import Storage, build_storage, is_storage_key
 from engine.schemas.agent import AgentConfig, AgentVersionOut
 from engine.schemas.calls import (CallCreate, CallCreated, CallRecord, CallStatus, Capacity, Direction,
                                   WorkerHeartbeat, WorkerOut)
@@ -37,6 +38,7 @@ class State:
     dispatcher: OutboxDispatcher
     carriers: CarrierRegistry
     service: EngineService
+    storage: Storage
 
 
 def build_app(settings: Optional[Settings] = None) -> FastAPI:
@@ -55,16 +57,29 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
         state.carriers = CarrierRegistry(settings)
         state.service = EngineService(settings, state.carriers, state.dispatcher)
         os.makedirs(settings.recordings_dir, exist_ok=True)
+        state.storage = build_storage(settings)
         logger.info("gvox-voice API %s up; carriers=%s; public=%s ws=%s", __version__,
                     ",".join(n for n in state.carriers.names() if state.carriers.get(n).configured()) or "none",
                     settings.public_http_url, settings.public_ws_url)
 
+        async def _sweep_recordings():
+            try:
+                async with state.db.session() as session:
+                    n = await state.service.sweep_recordings(session, state.storage)
+                    if n:
+                        logger.info("retention: deleted %d recording(s)", n)
+            except Exception as e:
+                logger.warning("recording retention sweep failed: %s", e)
+
         async def _sweeper():
             import asyncio
             tick = 0
+            await _sweep_recordings()
             while True:
                 await asyncio.sleep(10)
                 tick += 1
+                if tick % 8640 == 0:           # once a day
+                    await _sweep_recordings()
                 try:
                     async with state.db.session() as session:
                         n = await state.service.sweep_workers(session)
@@ -288,7 +303,19 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
     @app.get("/v1/calls/{call_id}/recording", tags=["calls"], dependencies=[Depends(require_api_key)])
     async def recording(call_id: str, db: AsyncSession = Depends(db_session)):
         call = await load_call(call_id, db)
-        if not call.recording_path or not os.path.exists(call.recording_path):
+        if not call.recording_path:
+            raise HTTPException(404, "no recording for this call")
+        if is_storage_key(call.recording_path):
+            if not await state.storage.exists(call.recording_path):
+                raise HTTPException(404, "no recording for this call")
+            if settings.recording_url_mode == "signed":
+                url = state.storage.signed_url(call.recording_path)
+                if url:
+                    return RedirectResponse(url, status_code=307)
+            data = await state.storage.get_bytes(call.recording_path)
+            return Response(data, media_type="audio/wav",
+                            headers={"Content-Disposition": f'inline; filename="{call.id}.wav"'})
+        if not os.path.exists(call.recording_path):      # legacy local file (pre-slice-1 or failed upload)
             raise HTTPException(404, "no recording for this call")
         return FileResponse(call.recording_path, media_type="audio/wav", filename=f"{call.id}.wav")
 

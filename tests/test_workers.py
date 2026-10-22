@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from test_api import H, HI, FakePlivo, client  # noqa: F401  (fixture re-export)
+from conftest import H, HI, FakePlivo
 
 BODY = {"to": "+919876543210", "agent": {"name": "s", "instructions": "x",
                                          "llm": {"provider": "google", "model": "gemini-2.5-flash"}}}

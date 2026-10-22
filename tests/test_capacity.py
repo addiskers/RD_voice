@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from engine.api.app import build_app
 from engine.api.capacity import CpsBudget, parse_limits
 from engine.config import Settings
-from test_api import H, HI, INTERNAL, KEY, FakePlivo, _agent_body, client  # noqa: F401
+from conftest import H, HI, INTERNAL, KEY, FakePlivo, _agent_body
 
 BODY = {"to": "+919876543210", "agent": {"name": "s", "instructions": "x",
                                          "llm": {"provider": "google", "model": "gemini-2.5-flash"}}}

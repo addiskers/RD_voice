@@ -24,12 +24,13 @@ from engine import __version__
 from engine.config import Settings, get_settings
 from engine.schemas.agent import AgentConfig, Mode, ProviderRef
 from engine.worker.events import CallReporter
-from engine.worker.graph.runtime import GraphRuntime, NodeAgent
+from engine.worker.graph.runtime import GraphRuntime
 from engine.worker.lifecycle import WorkerLifecycle
 from engine.worker.spool import EventSpool, replay_pending
 from engine.worker.graph.validate import compile_workflow
 from engine.worker.pipeline import make_session, prewarm_models
-from engine.worker.recording import Mixer, RecordingAudioOutput, TeeAudioInput
+from engine.storage import build_storage, recording_key
+from engine.worker.recording import RecordingAudioOutput, StereoRecorder, TeeAudioInput, remove_stale_raw
 from engine.worker.tools import CallState, build_mcp_servers, build_tools
 
 logger = logging.getLogger("gvox.worker")
@@ -43,7 +44,7 @@ class CallHandle:
     session: Any
     state: CallState
     reporter: CallReporter
-    mixer: Optional[Mixer] = None
+    recorder: Optional[StereoRecorder] = None
     end_reason: Optional[str] = None
     finalized: bool = False
     tasks: list[asyncio.Task] = field(default_factory=list)
@@ -56,6 +57,7 @@ class WorkerState:
     active: dict[str, CallHandle] = {}
     spools: dict[str, EventSpool] = {}      # per-call event spools still delivering (incl. replayed ones)
     worker_id: str = ""
+    storage: Any = None
     lifecycle: WorkerLifecycle
     tasks: list[asyncio.Task] = []
 
@@ -138,12 +140,13 @@ async def run_call(runtime: dict[str, Any], *, session_factory, attach_io, hangu
             logger.warning("extraction LLM unavailable for S2S: %s", e)
 
     session = session_factory(cfg, state, mcp_servers or None)
-    mixer: Optional[Mixer] = None
+    recorder: Optional[StereoRecorder] = None
     if runtime.get("record") and settings.record_calls and direction != "browser":
-        mixer = Mixer(max_seconds=int(runtime.get("max_duration_s") or settings.call_max_seconds) + 60)
-    attach_io(session, mixer)
+        recorder = StereoRecorder(os.path.join(settings.recordings_dir, call_id),
+                                  max_seconds=int(runtime.get("max_duration_s") or settings.call_max_seconds) + 60)
+    attach_io(session, recorder)
 
-    handle = CallHandle(call_id=call_id, session=session, state=state, reporter=reporter, mixer=mixer)
+    handle = CallHandle(call_id=call_id, session=session, state=state, reporter=reporter, recorder=recorder)
     handle.rt = rt   # finalize() runs post-call extraction through it
     W.active[call_id] = handle
     reporter.attach(session)
@@ -202,6 +205,25 @@ async def run_call(runtime: dict[str, Any], *, session_factory, attach_io, hangu
     return handle, rt, graph
 
 
+async def _store_recording(handle: CallHandle) -> Optional[str]:
+    """Interleave the call's two tracks, upload to storage, return the storage key (or a local path when the
+    upload fails, so the recording is not lost)."""
+    if handle.recorder is None:
+        return None
+    path = handle.recorder.finish()
+    if not path:
+        return None
+    from datetime import datetime, timezone
+    key = recording_key(handle.call_id, datetime.now(timezone.utc))
+    try:
+        await W.storage.put_file(path, key)
+        os.remove(path)
+        return key
+    except Exception as e:
+        logger.warning("recording upload for %s failed (%s); keeping local file %s", handle.call_id, e, path)
+        return path
+
+
 async def finalize(handle: CallHandle, reason: str) -> None:
     if handle.finalized:
         return
@@ -210,10 +232,7 @@ async def finalize(handle: CallHandle, reason: str) -> None:
     for t in handle.tasks:
         if not t.done() and t is not asyncio.current_task() and t.get_name() != "gvox-end":
             t.cancel()
-    recording_path = None
-    if handle.mixer is not None:
-        path = os.path.join(W.settings.recordings_dir, f"{handle.call_id}.wav")
-        recording_path = handle.mixer.write(path)
+    recording_path = await _store_recording(handle)
     rt = getattr(handle, "rt", None)
     if rt is not None and not handle.state.outcome and getattr(rt.cfg, "mode", None) == Mode.s2s:
         # speech-to-speech call ended without a finish tool (goodbye without the tool, caller hung up, client
@@ -296,11 +315,11 @@ def build_server():
             return make_session(cfg, settings, prewarmed=ctx.proc.userdata if ctx.proc else W.prewarmed,
                                 mcp_servers=mcp_servers, userdata=state, input_sample_rate=8000)
 
-        def attach_io(session, mixer):
+        def attach_io(session, recorder):
             ctx.session = session                      # agent-transport wires its audio I/O + close hook
-            if mixer is not None:
-                session.input.audio = TeeAudioInput(session.input.audio, mixer)
-                session.output.audio = RecordingAudioOutput(session.output.audio, mixer)
+            if recorder is not None:
+                session.input.audio = TeeAudioInput(session.input.audio, recorder)
+                session.output.audio = RecordingAudioOutput(session.output.audio, recorder)
 
         handle, rt, graph = await run_call(runtime, session_factory=session_factory, attach_io=attach_io,
                                            hangup_transport=lambda: ctx.endpoint.hangup(ctx.session_id),
@@ -328,6 +347,10 @@ async def _on_http_startup(app: web.Application) -> None:
     if getattr(W, "http", None) is None:
         W.http = httpx.AsyncClient(timeout=10.0)
     os.makedirs(W.settings.spool_dir, exist_ok=True)
+    W.storage = build_storage(W.settings)
+    stale = remove_stale_raw(W.settings.recordings_dir)
+    if stale:
+        logger.warning("removed %d stale raw recording file(s) from a previous run", stale)
     try:
         n = await replay_pending(W.settings, W.http, W.settings.spool_dir, W.spools)
         if n:

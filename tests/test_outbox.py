@@ -12,7 +12,7 @@ from sqlalchemy import select
 import engine.api.webhooks as wh
 from engine.api.db import Call, Database, WebhookDelivery
 from engine.api.webhooks import OutboxDispatcher, verify
-from test_api import H, HI, client  # noqa: F401
+from conftest import H  # noqa: F401
 
 SECRET = "s3"
 

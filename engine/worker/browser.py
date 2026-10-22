@@ -182,7 +182,7 @@ async def browser_ws_handler(request: web.Request) -> web.WebSocketResponse:
             cfg.turn.detector = "vad"       # the prewarmed detector carries its own inference executor
         return make_session(cfg, settings, prewarmed=W.prewarmed, mcp_servers=mcp_servers, userdata=state)
 
-    def attach_io(session, _mixer):
+    def attach_io(session, _recorder):
         session.input.audio = audio_in
         session.output.audio = audio_out
 

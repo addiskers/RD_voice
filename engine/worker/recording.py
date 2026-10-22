@@ -1,12 +1,13 @@
-"""Call recording: tee both audio directions into one mono 8 kHz WAV (caller + agent mixed).
+"""Call recording: two channels (left = caller, right = agent) at 8 kHz, written to disk as the call runs.
 
-Wraps the transport's AudioInput/AudioOutput so recording never touches the real-time path's
-error handling: every mixer call is guarded and a failure only loses the recording.
+Each direction is appended to its own raw PCM file at its wall-clock position (gaps are zero-filled, a
+burst never overwrites), so memory stays at one frame regardless of call length. ``finish`` interleaves
+the two raw files into one stereo WAV. Barge-in truncates the agent track at "now": audio the caller never
+heard is not in the recording. Every call is guarded: a recording failure only loses the recording.
 """
 
 from __future__ import annotations
 
-import array
 import logging
 import os
 import time
@@ -16,7 +17,7 @@ from typing import Optional
 from livekit import rtc
 from livekit.agents.voice.io import AudioInput, AudioOutput, AudioOutputCapabilities
 
-from engine.worker.audio import resample_pcm16
+from engine.worker.audio import StreamResampler
 
 try:
     import numpy as _np
@@ -25,110 +26,178 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 RATE = 8000
+RAW_SUFFIXES = (".caller.raw", ".agent.raw")
 
 
-class Mixer:
-    def __init__(self, max_seconds: int = 900):
-        self._t0 = time.monotonic()
-        self._buf = array.array("h")
-        self._max = max_seconds * RATE
-        self._agent_cursor = 0            # sample index where the next agent frame goes
-        self.frames_in = 0
-        self.frames_out = 0
+class _Track:
+    """One direction: append-only raw PCM16 at 8 kHz, positioned by time."""
 
-    def _now_idx(self) -> int:
+    def __init__(self, path: str, t0: float, max_samples: int):
+        self.path = path
+        self._t0 = t0
+        self._max = max_samples
+        self._f = open(path, "wb")
+        self.cursor = 0                  # samples written
+        self._rs: dict[int, StreamResampler] = {}
+        self.frames = 0
+
+    def now_idx(self) -> int:
         return int((time.monotonic() - self._t0) * RATE)
 
-    def _place(self, pcm8k: bytes, start: int) -> None:
-        n = len(pcm8k) // 2
-        if n == 0 or start > self._max:
+    def _resample(self, pcm: bytes, rate: int) -> bytes:
+        if rate == RATE:
+            return pcm
+        rs = self._rs.get(rate)
+        if rs is None:
+            rs = self._rs[rate] = StreamResampler(rate, RATE)
+        return rs.process(pcm)
+
+    def write(self, pcm: bytes, rate: int, *, at: Optional[int] = None) -> None:
+        pcm8 = self._resample(pcm, rate)
+        if not pcm8 or self.cursor >= self._max:
             return
-        buf = self._buf
-        if len(buf) < start:
-            buf.frombytes(bytes(2 * (start - len(buf))))
-        if _np is not None:
-            new = _np.frombuffer(pcm8k[: n * 2], dtype=_np.int16)
-            ov = min(len(buf) - start, n) if start < len(buf) else 0
-            if ov > 0:
-                old = _np.frombuffer(buf, dtype=_np.int16, count=ov, offset=start * 2).astype(_np.int32)
-                mixed = _np.clip(old + new[:ov].astype(_np.int32), -32768, 32767).astype(_np.int16)
-                buf[start:start + ov] = array.array("h", mixed.tobytes())
-            if ov < n:
-                buf.frombytes(new[ov:].tobytes())
-            return
-        import struct
-        samples = struct.unpack(f"<{n}h", pcm8k[: n * 2])
-        for i, s in enumerate(samples):
-            idx = start + i
-            if idx < len(buf):
-                v = buf[idx] + s
-                buf[idx] = 32767 if v > 32767 else (-32768 if v < -32768 else v)
-            else:
-                buf.append(s)
+        start = max(self.cursor, self.now_idx() if at is None else at)
+        if start > self.cursor:
+            self._f.write(bytes(2 * (start - self.cursor)))     # silence for the gap
+            self.cursor = start
+        n = len(pcm8) // 2
+        self._f.write(pcm8[: n * 2])
+        self.cursor += n
+        self.frames += 1
+
+    def truncate_to_now(self) -> None:
+        now = self.now_idx()
+        if self.cursor > now:
+            self._f.flush()
+            self._f.truncate(now * 2)
+            self._f.seek(now * 2)
+            self.cursor = now
+
+    def close(self) -> bytes:
+        tail = b"".join(rs.flush() for rs in self._rs.values())
+        if tail and self.cursor < self._max:
+            self._f.write(tail)
+            self.cursor += len(tail) // 2
+        self._f.close()
+        with open(self.path, "rb") as f:
+            return f.read()
+
+
+class StereoRecorder:
+    def __init__(self, base_path: str, max_seconds: int = 900):
+        os.makedirs(os.path.dirname(os.path.abspath(base_path)) or ".", exist_ok=True)
+        self.base_path = base_path
+        self._t0 = time.monotonic()
+        max_samples = max_seconds * RATE
+        self._caller = _Track(base_path + RAW_SUFFIXES[0], self._t0, max_samples)
+        self._agent = _Track(base_path + RAW_SUFFIXES[1], self._t0, max_samples)
+        self._finished = False
+
+    @property
+    def frames_in(self) -> int:
+        return self._caller.frames
+
+    @property
+    def frames_out(self) -> int:
+        return self._agent.frames
 
     def add_caller(self, pcm: bytes, rate: int) -> None:
         try:
-            self._place(resample_pcm16(pcm, rate, RATE), self._now_idx())
-            self.frames_in += 1
-        except Exception:
-            pass
+            self._caller.write(pcm, rate)
+        except Exception as e:
+            logger.debug("recording caller frame failed: %s", e)
 
     def add_agent(self, pcm: bytes, rate: int) -> None:
         try:
-            pcm8 = resample_pcm16(pcm, rate, RATE)
-            start = max(self._agent_cursor, self._now_idx())
-            self._place(pcm8, start)
-            self._agent_cursor = start + len(pcm8) // 2
-            self.frames_out += 1
-        except Exception:
-            pass
+            self._agent.write(pcm, rate)      # at max(cursor, now): queued playout stays contiguous
+        except Exception as e:
+            logger.debug("recording agent frame failed: %s", e)
 
     def agent_interrupted(self) -> None:
         """Playout was cleared: drop the not-yet-played tail of the agent track."""
         try:
-            now = self._now_idx()
-            if self._agent_cursor > now:
-                del self._buf[now:]
-                self._agent_cursor = now
-        except Exception:
-            pass
+            self._agent.truncate_to_now()
+        except Exception as e:
+            logger.debug("recording truncate failed: %s", e)
 
-    def write(self, path: str) -> Optional[str]:
-        if not self._buf:
+    def finish(self) -> Optional[str]:
+        if self._finished:
             return None
+        self._finished = True
         try:
-            os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+            left, right = self._caller.close(), self._agent.close()
+        except Exception as e:
+            logger.warning("failed to close recording tracks for %s: %s", self.base_path, e)
+            return None
+        for suffix in RAW_SUFFIXES:
+            try:
+                os.remove(self.base_path + suffix)
+            except OSError:
+                pass
+        if not left and not right:
+            return None
+        n = max(len(left), len(right)) // 2
+        try:
+            if _np is not None:
+                l_arr = _np.frombuffer(left.ljust(n * 2, b"\0"), dtype=_np.int16)
+                r_arr = _np.frombuffer(right.ljust(n * 2, b"\0"), dtype=_np.int16)
+                stereo = _np.stack([l_arr, r_arr], axis=1).reshape(-1).tobytes()
+            else:  # pragma: no cover
+                import array
+                l_arr = array.array("h", left.ljust(n * 2, b"\0"))
+                r_arr = array.array("h", right.ljust(n * 2, b"\0"))
+                out = array.array("h")
+                for a, b in zip(l_arr, r_arr):
+                    out.append(a)
+                    out.append(b)
+                stereo = out.tobytes()
+            path = self.base_path + ".wav"
             with wave.open(path, "wb") as wf:
-                wf.setnchannels(1)
+                wf.setnchannels(2)
                 wf.setsampwidth(2)
                 wf.setframerate(RATE)
-                wf.writeframes(self._buf.tobytes())
+                wf.writeframes(stereo)
             return path
         except Exception as e:
-            logger.warning("failed to write recording %s: %s", path, e)
+            logger.warning("failed to write recording %s: %s", self.base_path, e)
             return None
+
+
+def remove_stale_raw(directory: str) -> int:
+    """Delete raw track files a crashed worker left behind (they are useless without their pair's timing)."""
+    n = 0
+    if not os.path.isdir(directory):
+        return 0
+    for name in os.listdir(directory):
+        if name.endswith(RAW_SUFFIXES):
+            try:
+                os.remove(os.path.join(directory, name))
+                n += 1
+            except OSError:
+                pass
+    return n
 
 
 class TeeAudioInput(AudioInput):
-    def __init__(self, source: AudioInput, mixer: Mixer):
+    def __init__(self, source: AudioInput, recorder: StereoRecorder):
         super().__init__(label="RecordingTee", source=source)
-        self._mixer = mixer
+        self._rec = recorder
 
     async def __anext__(self) -> rtc.AudioFrame:
         frame = await super().__anext__()
-        self._mixer.add_caller(bytes(frame.data), frame.sample_rate)
+        self._rec.add_caller(bytes(frame.data), frame.sample_rate)
         return frame
 
 
 class RecordingAudioOutput(AudioOutput):
-    def __init__(self, next_in_chain: AudioOutput, mixer: Mixer):
+    def __init__(self, next_in_chain: AudioOutput, recorder: StereoRecorder):
         super().__init__(label="RecordingTee", capabilities=AudioOutputCapabilities(pause=True),
                          next_in_chain=next_in_chain, sample_rate=next_in_chain.sample_rate)
-        self._mixer = mixer
+        self._rec = recorder
 
     async def capture_frame(self, frame: rtc.AudioFrame) -> None:
         await super().capture_frame(frame)
-        self._mixer.add_agent(bytes(frame.data), frame.sample_rate)
+        self._rec.add_agent(bytes(frame.data), frame.sample_rate)
         assert self.next_in_chain is not None
         await self.next_in_chain.capture_frame(frame)
 
@@ -138,6 +207,6 @@ class RecordingAudioOutput(AudioOutput):
         self.next_in_chain.flush()
 
     def clear_buffer(self) -> None:
-        self._mixer.agent_interrupted()
+        self._rec.agent_interrupted()
         assert self.next_in_chain is not None
         self.next_in_chain.clear_buffer()
