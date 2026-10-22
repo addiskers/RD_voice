@@ -29,9 +29,10 @@ py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev,plivo-transport]"
 copy .env.example .env      # fill keys
 .\.venv\Scripts\python.exe -m pytest -q                       # offline tests
-.\.venv\Scripts\gvox-api.exe                                   # API on :8080
+.\.venv\Scripts\gvox-api.exe                                   # API on :8080 (runs migrations on start)
 .\.venv\Scripts\gvox-worker.exe download-files                 # once: VAD + turn-detector models
 .\.venv\Scripts\gvox-worker.exe dev                            # media WS :8090, control :8091
+.\.venv\Scripts\python.exe scripts\fake_carrier.py --calls 1   # phone-path smoke (API with ENABLE_TEST_ENDPOINTS=true)
 ```
 Browser test (no telephony): connect a WebSocket to `ws://localhost:8091/browser`, send
 `{"type":"setup","auth_key":"demo-browser-key","agent":{...},"variables":{"first_name":"Pratik"}}`, then
@@ -84,9 +85,44 @@ Per-turn metrics on the call record: `eou_delay` (end of speech → turn committ
 preemptive generation started before the turn ended), `tts_ttfb`, and `total` = end of the caller's speech → agent audio
 starts (user-perceived), plus `pickup_to_first_word`.
 
-## Latency (measured from a laptop in India, 2026-09-08; `scripts/latency_bench.py --runs 2`)
+## Reliability on the carrier path (slice 1, 2026-10-23)
+See `docs/runbook.md` for operations. What changed:
+- **Workers register and drain.** Heartbeats every 5 s to `POST /internal/workers/heartbeat`; `GET /v1/workers`;
+  `POST /v1/workers/{id}/drain` (or `POST /internal/drain` on the worker) stops new streams, lets live calls finish,
+  waits for the event spool, then the process exits. A silent worker is dead after 20 s and its calls fail as
+  `worker_lost`. Compose runs Postgres, Caddy and an optional standby worker for blue/green deploys.
+- **Capacity has two pools** (`GET /v1/capacity` → `engine`, `carriers`); `POST /v1/calls` answers 429 with
+  `detail.reason` (`engine_full | carrier_full | cps_exceeded`) and `Retry-After`. Ringing calls do not hold an
+  engine slot. Inbound with no slot hears a busy line.
+- **Webhooks are an outbox** (`webhook_deliveries` table): ordered per call, retried, `dead` after the schedule;
+  `GET /v1/calls/{id}/deliveries`, `POST .../deliveries/{seq}/replay`. Worker events are spooled on disk and
+  retried until the API acknowledges them, so an API restart loses nothing.
+- **Failover** on STT and LLM via LiveKit's FallbackAdapter (`STT_FALLBACK_PROVIDER`, `LLM_FALLBACK_PROVIDER`,
+  per-agent `stt.fallback` / `llm.fallback`). Flux is never wrapped; a circuit breaker starts the next calls on
+  nova-3 after a Flux failure. Each turn's metrics carry `stt_provider` / `llm_provider` / `tts_provider`.
+- **Recordings** are two-channel (caller left, agent right) 8 kHz WAV written during the call, uploaded to
+  `RECORDING_STORAGE` (`local` | `s3`), deleted after `RECORDING_RETENTION_DAYS`.
+- **8 kHz is the truth.** The carrier path feeds the STT at 8 kHz (no upsampling), the resampler is soxr through
+  LiveKit, and `scripts/fake_carrier.py` drives the real worker media endpoint with band-limited G.711 audio:
+  `python scripts/fake_carrier.py --calls 1 --script yes,no` (API started with `ENABLE_TEST_ENDPOINTS=true`).
+  `scripts/latency_bench.py` defaults to `--path telephony`.
+- **Security minimums.** Plivo callbacks are signature-checked (`CARRIER_VERIFY_SIGNATURES`), Vobiz by signature
+  or `VOBIZ_CALLBACK_IPS`; BYOK keys and webhook secrets are encrypted at rest with `ENGINE_ENCRYPTION_KEY`
+  (`gvox-api encrypt-existing` for old rows) and masked on read; `/ui/config.json` and `/metrics` need a key.
+- **Schema migrations** run on start (Alembic); `gvox-api migrate`, `gvox-api copy-sqlite --from data/engine.db`.
+- **Compatibility shim.** agent-transport 0.2.2 under LiveKit Agents 1.8 crashed every carrier call in
+  `AgentSession.start` (missing stub attributes); `engine/worker/main.py::patch_stub_job` fills them in.
+
+### Latency on the phone path (fake carrier, Windows laptop, 2026-10-23)
+First measurement over the real 8 kHz mu-law endpoint with the EO example agent as configured in `.env`
+(one call, two caller turns): client-side end-of-speech → first agent audio **p50 2.69 s**, engine `total`
+**p50 2.83 s**. The browser-path numbers below are the previous reference and are optimistic for phone callers;
+re-run `python scripts/latency_bench.py --runs 3 --path telephony` on the deploy box to produce the table that
+replaces them.
+
+## Latency (browser path, laptop in India, 2026-09-08; `scripts/latency_bench.py --runs 2 --path browser`)
 `total` = end of the caller's speech → agent audio starts (user-perceived), p50 over the runs; STT column = exact
-transcription of the synthesized utterance.
+transcription of the synthesized utterance. **Measured over the 16 kHz browser transport, not the phone path.**
 
 | LLM | STT / turn detection | TTS | total p50 | eou | llm first token | tts first byte |
 |---|---|---|---|---|---|---|

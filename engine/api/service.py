@@ -133,6 +133,27 @@ class EngineService:
                                  provider=provider)
         return CarrierPool(total=total, free=max(0, total - used), cps_free=self.cps.available(provider))
 
+    async def ops_snapshot(self, db: AsyncSession) -> dict[str, Any]:
+        """Numbers for /health and /metrics: calls by status, pools, outbox backlog, workers."""
+        from engine.api.db import WebhookDelivery
+        by_status: dict[str, int] = {}
+        for status, n in await db.execute(select(Call.status, func.count()).group_by(Call.status)):
+            by_status[str(status)] = int(n)
+        cap = await self.capacity(db)
+        pending = int(await db.scalar(select(func.count()).select_from(WebhookDelivery)
+                                      .where(WebhookDelivery.status.in_(("pending", "delivering")))) or 0)
+        dead = int(await db.scalar(select(func.count()).select_from(WebhookDelivery)
+                                   .where(WebhookDelivery.status == "dead")) or 0)
+        oldest = await db.scalar(select(func.min(WebhookDelivery.created_at))
+                                 .where(WebhookDelivery.status.in_(("pending", "delivering"))))
+        oldest_s = round((utcnow() - _aware(oldest)).total_seconds(), 1) if oldest else None
+        workers: dict[str, int] = {"live": 0, "dead": 0, "draining": 0}
+        for w in cap.workers:
+            workers["draining" if w.get("draining") and w.get("status") == "live" else w.get("status", "live")] += 1
+        return {"calls": by_status, "engine": {"free": cap.engine_free, "total": cap.engine_total},
+                "carriers": {k: p.as_dict() for k, p in cap.carriers.items()},
+                "outbox": {"pending": pending, "dead": dead, "oldest_s": oldest_s}, "workers": workers}
+
     async def capacity(self, db: AsyncSession) -> CapacityView:
         free, total = await self.engine_slots(db)
         pools = {}

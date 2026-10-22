@@ -145,8 +145,48 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
     # ----------------------------------------------------------------- health / capacity
     @app.get("/health", tags=["ops"])
     async def health(db: AsyncSession = Depends(db_session)):
-        active = await state.service.active_count(db)
-        return {"status": "ok", "version": __version__, "active_calls": active}
+        try:
+            snap = await state.service.ops_snapshot(db)
+            active = await state.service.active_count(db)
+            db_ok = "ok"
+        except Exception as e:
+            logger.warning("health: database check failed: %s", e)
+            return JSONResponse(status_code=503, content={"status": "degraded", "version": __version__, "db": "error",
+                                                          "active_calls": None, "workers_live": None,
+                                                          "outbox_pending": None, "outbox_oldest_s": None})
+        return {"status": "ok", "version": __version__, "active_calls": active, "db": db_ok,
+                "workers_live": snap["workers"]["live"], "outbox_pending": snap["outbox"]["pending"],
+                "outbox_oldest_s": snap["outbox"]["oldest_s"]}
+
+    # Prometheus gauges live in a per-app registry (several apps are built in one test process)
+    from prometheus_client import CollectorRegistry, Gauge, generate_latest, CONTENT_TYPE_LATEST
+    registry = CollectorRegistry()
+    g_calls = Gauge("gvox_calls", "calls by status", ["status"], registry=registry)
+    g_engine_free = Gauge("gvox_engine_free", "free conversation slots", registry=registry)
+    g_engine_total = Gauge("gvox_engine_total", "total conversation slots", registry=registry)
+    g_carrier_free = Gauge("gvox_carrier_free", "free carrier slots", ["provider"], registry=registry)
+    g_carrier_total = Gauge("gvox_carrier_total", "carrier slot limit", ["provider"], registry=registry)
+    g_outbox_pending = Gauge("gvox_outbox_pending", "webhook deliveries pending or in flight", registry=registry)
+    g_outbox_dead = Gauge("gvox_outbox_dead", "webhook deliveries given up on", registry=registry)
+    g_outbox_oldest = Gauge("gvox_outbox_oldest_seconds", "age of the oldest pending delivery", registry=registry)
+    g_workers = Gauge("gvox_workers", "workers by status", ["status"], registry=registry)
+
+    @app.get("/metrics", tags=["ops"], dependencies=[Depends(require_internal)], include_in_schema=False)
+    async def metrics(db: AsyncSession = Depends(db_session)):
+        snap = await state.service.ops_snapshot(db)
+        for status in ("queued", "dialing", "ringing", "in_progress", "completed", "failed", "busy", "no_answer", "cancelled"):
+            g_calls.labels(status=status).set(snap["calls"].get(status, 0))
+        g_engine_free.set(snap["engine"]["free"])
+        g_engine_total.set(snap["engine"]["total"])
+        for provider, pool in snap["carriers"].items():
+            g_carrier_free.labels(provider=provider).set(pool["free"])
+            g_carrier_total.labels(provider=provider).set(pool["total"])
+        g_outbox_pending.set(snap["outbox"]["pending"])
+        g_outbox_dead.set(snap["outbox"]["dead"])
+        g_outbox_oldest.set(snap["outbox"]["oldest_s"] or 0)
+        for status, n in snap["workers"].items():
+            g_workers.labels(status=status).set(n)
+        return Response(generate_latest(registry), media_type=CONTENT_TYPE_LATEST)
 
     @app.get("/v1/capacity", response_model=Capacity, tags=["ops"], dependencies=[Depends(require_api_key)])
     async def capacity(db: AsyncSession = Depends(db_session)):
