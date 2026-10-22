@@ -118,8 +118,10 @@ async def run_call(args, idx: int, utterances: list[list[bytes]], http: httpx.As
         "greeting": "Hello, this is the GlobalVox test agent. Can you hear me?",
         "llm": {"provider": "google", "model": "gemini-2.5-flash-lite"}}, {})
     agent = apply_overrides(agent, args)
-    r = await http.post(f"{args.api}/v1/calls", json={"to": f"+91000000{idx:04d}", "provider": "fake", "agent": agent,
-                                                       "variables": variables}, headers=H, timeout=20)
+    body = {"to": f"+91000000{idx:04d}", "provider": "fake", "agent": agent, "variables": variables}
+    if args.webhook_url:
+        body["webhook_url"] = args.webhook_url
+    r = await http.post(f"{args.api}/v1/calls", json=body, headers=H, timeout=20)
     if r.status_code != 201:
         res["error"] = f"create: {r.status_code} {r.text[:200]}"
         return res
@@ -220,6 +222,11 @@ async def run_call(args, idx: int, utterances: list[list[bytes]], http: httpx.As
             recv_task.cancel()
 
     duration = round(time.monotonic() - t0, 1)
+    if args.hangup_delay and state["utt"] < len(utterances) and not args.minutes:
+        # the stream dropped before the script finished (worker died?): a real carrier keeps the call up
+        # (keepCallAlive) until the caller hangs up; emulate that patience
+        res["events"].append(f"stream dropped early; hangup in {args.hangup_delay}s")
+        await asyncio.sleep(args.hangup_delay)
     await http.post(f"{args.api}/carrier/fake/hangup", params={"call_id": call_id},
                     data={"CallUUID": pcid, "HangupCauseCode": "4000", "HangupCauseName": "Normal Hangup",
                           "Duration": str(int(duration)), "AnswerTime": "now"}, timeout=20)
@@ -289,6 +296,9 @@ def main() -> int:
     ap.add_argument("--llm", default="", help="gemini-2.5-flash-lite | gemini-2.5-flash | groq:openai/gpt-oss-20b")
     ap.add_argument("--tts", default="", choices=["", "cartesia", "sarvam", "elevenlabs"])
     ap.add_argument("--thinking", type=int, default=0)
+    ap.add_argument("--webhook-url", default="", help="register a webhook on each call (e.g. scripts/webhook_sink.py)")
+    ap.add_argument("--hangup-delay", type=float, default=0.0,
+                    help="seconds to keep the call up after the stream drops early (worker-loss drill)")
     ap.add_argument("--json", action="store_true", help="print only the JSON result")
     args = ap.parse_args()
     out = asyncio.run(run(args))

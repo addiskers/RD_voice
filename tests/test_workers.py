@@ -65,6 +65,28 @@ def test_dead_worker_fails_its_calls_and_hangs_up(client):
     assert client.get("/v1/workers", headers=H).json()[0]["status"] == "dead"
 
 
+def test_dead_worker_finalizes_call_hung_up_by_carrier(client):
+    """Carrier hangup arrived first (call waits as 'completed' for the worker's ended event); the worker
+    then dies: the call must still get its terminal event instead of waiting forever."""
+    _hb(client)
+    call_id = _live_call_on_w1(client, uuid="cu-5")
+    client.post(f"/carrier/plivo/hangup?call_id={call_id}", data={"CallUUID": "cu-5", "HangupCauseCode": "4000",
+                                                                  "AnswerTime": "2026-10-23 10:00:00", "Duration": "30"})
+    rec = client.get(f"/v1/calls/{call_id}", headers=H).json()
+    assert rec["status"] == "completed"
+    assert _backdate_and_sweep(client) == 1
+    rec = client.get(f"/v1/calls/{call_id}", headers=H).json()
+    assert rec["status"] == "completed" and rec["end_reason"] == "worker_lost" and rec["duration_s"] == 30.0
+    engine = client.app.state.engine
+
+    async def emitted():
+        from engine.api.db import Call
+        async with engine.db.session() as s:
+            return (await s.get(Call, call_id)).ended_emitted
+
+    assert client.portal.call(emitted) is True
+
+
 def test_late_ended_after_worker_lost_is_ignored(client):
     _hb(client)
     call_id = _live_call_on_w1(client)

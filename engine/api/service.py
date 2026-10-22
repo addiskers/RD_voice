@@ -217,12 +217,21 @@ class EngineService:
             await db.commit()
             logger.warning("worker %s (%s) is dead: no heartbeat for %.0fs", w.worker_id, w.worker_url,
                            self.settings.worker_dead_after_seconds)
-            calls = await db.scalars(select(Call).where(Call.status == CallStatus.in_progress.value)
+            # every call still waiting on this worker: live ones, and ones the carrier already hung up that
+            # were waiting for the worker's `ended` event (status completed, ended_emitted false)
+            calls = await db.scalars(select(Call).where(Call.ended_emitted.is_(False))
                                      .where((Call.worker_id == w.worker_id) | (Call.worker_url == w.worker_url)))
             for call in list(calls):
-                await self.finalize(db, call, status=CallStatus.failed, reason="worker_lost",
-                                    error="worker heartbeat lost")
-                await self._hangup_carrier_leg(call)
+                if call.status == CallStatus.completed.value:
+                    await self.finalize(db, call, status=CallStatus.completed, reason="worker_lost",
+                                        error="worker heartbeat lost before it reported the end of the call",
+                                        duration_s=call.duration_s)
+                elif call.status in ACTIVE_STATUSES:
+                    await self.finalize(db, call, status=CallStatus.failed, reason="worker_lost",
+                                        error="worker heartbeat lost")
+                    await self._hangup_carrier_leg(call)
+                else:
+                    continue
                 failed += 1
         return failed
 

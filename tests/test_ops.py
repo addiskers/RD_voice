@@ -2,7 +2,7 @@
 
 import asyncio
 
-from conftest import H, HI
+from conftest import HI
 
 
 def test_health_shape(client):
