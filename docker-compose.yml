@@ -1,0 +1,29 @@
+services:
+  api:
+    build: .
+    env_file: .env
+    environment:
+      ROLE: api
+      INTERNAL_API_URL: http://api:8080
+      WORKER_INTERNAL_URL: http://worker:8091
+    ports: ["8080:8080"]
+    volumes:
+      - engine-data:/app/data
+    restart: unless-stopped
+
+  worker:
+    build: .
+    env_file: .env
+    environment:
+      ROLE: worker
+      INTERNAL_API_URL: http://api:8080
+      WORKER_INTERNAL_URL: http://worker:8091
+    ports: ["8090:8090", "8091:8091"]
+    volumes:
+      - engine-data:/app/data
+    depends_on: [api]
+    restart: unless-stopped
+    stop_grace_period: 10m      # let live calls finish
+
+volumes:
+  engine-data:

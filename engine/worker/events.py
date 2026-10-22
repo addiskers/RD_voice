@@ -1,0 +1,228 @@
+"""CallReporter: AgentSession events -> transcript + per-turn metrics -> engine API (ordered, seq'd)."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from typing import Any, Optional
+
+import httpx
+from livekit.agents import AgentSession, llm as lk_llm
+
+from engine.config import Settings
+from engine.schemas.calls import CallMetrics, TranscriptTurn, TurnMetrics
+
+logger = logging.getLogger(__name__)
+
+
+class CallReporter:
+    def __init__(self, settings: Settings, http: httpx.AsyncClient, call_id: str, *, worker_url: str = ""):
+        self.settings = settings
+        self.http = http
+        self.call_id = call_id
+        self.worker_url = worker_url
+        self.started_at = time.monotonic()
+        self.seq = 0
+        self.transcript: list[TranscriptTurn] = []
+        self.metrics = CallMetrics()
+        self._turn_index = 0
+        self._current: Optional[TurnMetrics] = None
+        self._first_agent_speech_at: Optional[float] = None
+        self._last_user_stop: Optional[float] = None
+        self._pending_user: dict[str, Any] = {}
+        # in-process observers (e.g. the browser transport pushing live metrics to the page): fn(type, data)
+        self.listeners: list[Any] = []
+        self._queue: asyncio.Queue = asyncio.Queue()
+        self._task: Optional[asyncio.Task] = None
+        self._closed = False
+        self.node_id: Optional[str] = None
+        self.errors: list[str] = []
+        self._realtime = False
+
+    # ------------------------------------------------------------------ transport
+    def start(self) -> None:
+        if self._task is None:
+            self._task = asyncio.create_task(self._pump())
+
+    async def _pump(self) -> None:
+        url = f"{self.settings.internal_api_url.rstrip('/')}/internal/calls/{self.call_id}/events"
+        headers = {"X-Internal-Token": self.settings.internal_token}
+        while True:
+            item = await self._queue.get()
+            if item is None:
+                break
+            for attempt in range(3):
+                try:
+                    r = await self.http.post(url, json=item, headers=headers, timeout=5.0)
+                    if r.status_code < 500:
+                        break
+                except Exception as e:
+                    logger.warning("event post failed (%s) attempt %d: %s", item.get("type"), attempt + 1, e)
+                await asyncio.sleep(0.5 * (attempt + 1))
+
+    def post(self, etype: str, data: dict[str, Any]) -> None:
+        if self._closed:
+            return
+        self.seq += 1
+        self._queue.put_nowait({"type": etype, "seq": self.seq, "data": data})
+        for fn in list(self.listeners):
+            try:
+                fn(etype, data)
+            except Exception as e:  # observers must never affect the call
+                logger.debug("reporter listener failed: %s", e)
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        await self._queue.put(None)
+        if self._task:
+            try:
+                await asyncio.wait_for(self._task, timeout=10)
+            except Exception:
+                self._task.cancel()
+
+    # ------------------------------------------------------------------ helpers
+    def at(self) -> float:
+        return round(time.monotonic() - self.started_at, 3)
+
+    def snapshot(self) -> dict[str, Any]:
+        self.metrics.recompute()
+        return {"transcript": [t.model_dump(mode="json") for t in self.transcript],
+                "metrics": self.metrics.model_dump(mode="json")}
+
+    async def report_tool(self, name: str, data: dict[str, Any]) -> None:
+        self.post("tool", {"name": name, "at": self.at(), "node": self.node_id, **data})
+
+    async def report_transition(self, data: dict[str, Any]) -> None:
+        self.node_id = data.get("to")
+        self.post("transition", {"at": self.at(), **data})
+
+    # ------------------------------------------------------------------ session wiring
+    def attach(self, session: AgentSession) -> None:
+        try:
+            self._realtime = isinstance(session.llm, lk_llm.RealtimeModel)
+        except Exception:
+            self._realtime = False
+
+        @session.on("conversation_item_added")
+        def _item(ev):
+            item = ev.item
+            if isinstance(item, lk_llm.ChatMessage) and item.role in ("user", "assistant"):
+                text = item.text_content or ""
+                if not text.strip():
+                    return
+                rep = dict(getattr(item, "metrics", None) or {})
+                if item.role == "user":
+                    # wall-clock end of the caller's speech: the anchor for user-perceived latency
+                    stop = rep.get("stopped_speaking_at")
+                    if stop:
+                        self._last_user_stop = float(stop)
+                    self._pending_user = {"eou": rep.get("end_of_turn_delay"), "stt": rep.get("transcription_delay")}
+                else:
+                    ttft = rep.get("llm_node_ttft")
+                    target = self._current or (self.metrics.turns[-1] if self.metrics.turns else None)
+                    if ttft is not None and target is not None and target.llm_ttft is None:
+                        target.llm_ttft = round(float(ttft), 3)
+                        self.post("metrics", self.metrics.recompute().model_dump(mode="json"))
+                turn = TranscriptTurn(role="user" if item.role == "user" else "agent", text=text, at=self.at(),
+                                      node=self.node_id, interrupted=bool(item.interrupted),
+                                      extra={k: round(float(v), 3) for k, v in rep.items() if isinstance(v, (int, float))
+                                             and k in ("end_of_turn_delay", "transcription_delay", "llm_node_ttft",
+                                                       "llm_node_ttfs")})
+                self.transcript.append(turn)
+                self.post("turn", turn.model_dump(mode="json"))
+
+        @session.on("metrics_collected")
+        def _metrics(ev):
+            m = ev.metrics
+            mtype = getattr(m, "type", "")
+            try:
+                if mtype == "eou_metrics":
+                    self._turn_index += 1
+                    self._current = TurnMetrics(turn=self._turn_index, at=self.at(),
+                                                eou_delay=round(m.end_of_utterance_delay, 3),
+                                                stt_delay=round(m.transcription_delay, 3))
+                    self.metrics.turns.append(self._current)
+                elif mtype == "llm_metrics":
+                    target = self._current or (self.metrics.turns[-1] if self.metrics.turns else None)
+                    if target is None:
+                        self._turn_index += 1
+                        target = self._current = TurnMetrics(turn=self._turn_index, at=self.at())
+                        self.metrics.turns.append(target)
+                    if target.llm_ttft is None and m.ttft is not None and m.ttft >= 0:
+                        target.llm_ttft = round(m.ttft, 3)   # -1 = preemptive generation, not measured
+                elif mtype == "tts_metrics":
+                    target = self._current or (self.metrics.turns[-1] if self.metrics.turns else None)
+                    if target is not None and target.tts_ttfb is None:
+                        target.tts_ttfb = round(m.ttfb, 3)
+                        self.post("metrics", self.metrics.recompute().model_dump(mode="json"))
+                elif mtype == "realtime_model_metrics":
+                    # speech-to-speech: the model's own ttft is ~0 (audio arrives with the response); the
+                    # user-perceived total is measured from end-of-speech detection to agent audio instead
+                    target = self._current or (self.metrics.turns[-1] if self.metrics.turns else None)
+                    if target is not None and target.llm_ttft is None and m.ttft is not None and m.ttft > 0:
+                        target.llm_ttft = round(m.ttft, 3)
+            except Exception as e:
+                logger.debug("metrics handling error: %s", e)
+
+        @session.on("user_state_changed")
+        def _user_state(ev):
+            # end-of-speech detection (Silero VAD, or the realtime model's server VAD): the anchor for
+            # speech-to-speech turns, where no STT end-of-turn metrics exist
+            if ev.new_state == "listening" and ev.old_state == "speaking" and self._realtime:
+                self._last_user_stop = float(getattr(ev, "created_at", time.time()))
+                self._turn_index += 1
+                self._current = TurnMetrics(turn=self._turn_index, at=self.at())
+                self.metrics.turns.append(self._current)
+
+        @session.on("session_usage_updated")
+        def _usage(ev):
+            try:
+                self.metrics.usage = ev.usage.model_dump(mode="json") if hasattr(ev.usage, "model_dump") else {}
+            except Exception:
+                pass
+
+        @session.on("agent_state_changed")
+        def _agent_state(ev):
+            if ev.new_state != "speaking":
+                return
+            if self._first_agent_speech_at is None:
+                self._first_agent_speech_at = self.at()
+                self.metrics.pickup_to_first_word = self._first_agent_speech_at
+            # user-perceived response time: end of the caller's speech -> agent audio starts playing
+            if self._last_user_stop and self._current is not None and self._current.total is None:
+                total = float(ev.created_at) - self._last_user_stop
+                if 0 < total < 30:
+                    self._current.total = round(total, 3)
+                self._last_user_stop = None
+                self.post("metrics", self.metrics.recompute().model_dump(mode="json"))
+                self._current = None
+
+        @session.on("error")
+        def _error(ev):
+            try:
+                self.errors.append(f"{type(ev.error).__name__}: {getattr(ev.error, 'message', ev.error)}")
+            except Exception:
+                self.errors.append(str(ev))
+            logger.error("session error on %s: %s", self.call_id, self.errors[-1])
+            # local listeners only (browser console): the API learns about errors from the 'ended' event
+            source = getattr(ev, "source", None)
+            payload = {"message": self.errors[-1][:300], "source": type(source).__name__ if source else "",
+                       "recoverable": bool(getattr(ev, "recoverable", False))}
+            for fn in list(self.listeners):
+                try:
+                    fn("error", payload)
+                except Exception:
+                    pass
+
+    def started(self) -> None:
+        self.post("started", {"worker_url": self.worker_url, "at": self.at()})
+
+    def ended(self, reason: str, *, recording_path: Optional[str] = None, outcome: Optional[dict[str, Any]] = None,
+              hangup_carrier: bool = False, error: Optional[str] = None) -> None:
+        snap = self.snapshot()
+        self.post("ended", {"reason": reason, "duration_s": self.at(), "recording_path": recording_path,
+                            "outcome": outcome or {}, "hangup_carrier": hangup_carrier, "error": error,
+                            "errors": self.errors, **snap})

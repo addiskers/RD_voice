@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>gvox-voice test console</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header>
+  <h1><span id="health-dot" class="dot"></span>gvox-voice test console</h1>
+  <span id="health-text" class="status" style="margin:0"></span>
+  <span class="spacer"></span>
+  <input id="api-base" placeholder="API base (default this origin)" />
+  <input id="api-key" placeholder="Engine API key" />
+  <button class="btn secondary" id="save-settings">Save</button>
+</header>
+<nav>
+  <button data-tab="talk" class="active">Talk (browser mic)</button>
+  <button data-tab="phone">Phone call</button>
+  <button data-tab="calls">Calls</button>
+  <button data-tab="agent">Agent JSON</button>
+</nav>
+<main>
+  <!-- ------------------------------------------------------------------ TALK -->
+  <section class="tab active" id="tab-talk">
+    <div class="grid">
+      <div>
+        <div class="card">
+          <h2>Agent</h2>
+          <label>Mode</label>
+          <select id="talk-mode">
+            <option value="s2s">Speech-to-speech (Gemini 3.1 Live) — most natural, ~1.2–2.5 s replies</option>
+            <option value="cascaded">Cascaded STT → LLM → TTS — BYO voice, per-step control</option>
+          </select>
+          <div class="row">
+            <div><label>STT (cascaded)</label><select id="talk-stt"></select></div>
+            <div><label>LLM (cascaded)</label><select id="talk-llm"></select></div>
+          </div>
+          <label>TTS voice (cascaded mode)</label>
+          <select id="talk-tts"></select>
+          <div class="status" id="pipeline-summary"></div>
+          <div class="badges" id="provider-badges"></div>
+          <label><input type="checkbox" id="talk-flat" /> Flat execution: whole workflow in one prompt (one LLM call per turn, fastest; step handoffs are prompt-guided)</label>
+          <label>Agent source</label>
+          <select id="talk-agent-source">
+            <option value="example">EO RSVP workflow (5 nodes)</option>
+            <option value="prompt">Single prompt (below)</option>
+            <option value="editor">Agent JSON tab</option>
+          </select>
+          <label>Single prompt</label>
+          <textarea id="talk-prompt" style="min-height:90px">You are a friendly assistant for GlobalVox. Keep replies to one or two short sentences.</textarea>
+          <label>Greeting (spoken first, optional)</label>
+          <input id="talk-greeting" value="Hello! This is the GlobalVox assistant. How can I help you today?" />
+        </div>
+        <div class="card" style="margin-top:12px">
+          <h2>Variables ({{template}} values)</h2>
+          <div class="row"><div><label>first_name</label><input id="var-first_name" value="Pratik" /></div>
+            <div><label>event_name</label><input id="var-event_name" value="the AI First Mindset Workshop with Raj Goodman" /></div></div>
+          <div class="row"><div><label>event_date</label><input id="var-event_date" value="Friday the eleventh of September" /></div>
+            <div><label>event_time</label><input id="var-event_time" value="7 pm" /></div></div>
+          <label>event_venue</label><input id="var-event_venue" value="DoubleTree by Hilton, Ahmedabad" />
+        </div>
+        <div class="card" style="margin-top:12px">
+          <h2>Session</h2>
+          <div class="row">
+            <button class="btn" id="talk-start">Start call</button>
+            <button class="btn danger" id="talk-stop" disabled>End call</button>
+          </div>
+          <div class="meters"><div class="meter"><div id="meter-in"></div></div><div class="meter agent"><div id="meter-out"></div></div></div>
+          <div class="status" id="talk-status">Idle. Allow the microphone when asked; the agent speaks first.</div>
+        </div>
+        <div class="card latency-card">
+          <h2>Latency · end of your speech → agent audio</h2>
+          <div class="lat-big" id="lat-total">—</div>
+          <div class="status" id="lat-stages">waiting for the first reply…</div>
+          <div class="kv lat-kv">
+            <div>session</div><div id="lat-session">—</div>
+            <div>greeting</div><div id="lat-first">—</div>
+            <div>client ≈</div><div id="lat-client">—</div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="card">
+          <h2>Transcript <small id="talk-callid"></small></h2>
+          <div class="transcript" id="talk-transcript"></div>
+        </div>
+        <div class="card" style="margin-top:12px">
+          <h2>After the call: record from the engine</h2>
+          <div id="talk-summary" class="kv"><div>status</div><div>—</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------------------ PHONE -->
+  <section class="tab" id="tab-phone">
+    <div class="grid">
+      <div class="card">
+        <h2>Place an outbound call</h2>
+        <label>To (E.164)</label><input id="phone-to" placeholder="+91XXXXXXXXXX" />
+        <label>Provider</label>
+        <select id="phone-provider"><option value="">engine default</option><option>plivo</option><option>vobiz</option><option>enablex</option></select>
+        <label>Agent source</label>
+        <select id="phone-agent-source">
+          <option value="example">EO RSVP workflow (5 nodes)</option>
+          <option value="prompt">Single prompt (Talk tab)</option>
+          <option value="editor">Agent JSON tab</option>
+        </select>
+        <label>Webhook URL (optional; e.g. scripts/webhook_sink.py)</label><input id="phone-webhook" placeholder="http://host:9000/hook" />
+        <div class="row" style="margin-top:10px"><button class="btn" id="phone-dial">Dial</button></div>
+        <div class="status warn" id="phone-warning"></div>
+        <div class="status" id="phone-status"></div>
+      </div>
+      <div class="card">
+        <h2>Live status</h2>
+        <div class="kv" id="phone-live"><div>call</div><div>—</div></div>
+        <div class="row" style="margin-top:10px"><button class="btn danger" id="phone-hangup" disabled>Hang up</button></div>
+        <label>Say something on the live call (operator whisper to the caller)</label>
+        <div class="row"><input id="phone-say" placeholder="One moment please" /><button class="btn secondary" id="phone-say-btn" disabled>Say</button></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------------------ CALLS -->
+  <section class="tab" id="tab-calls">
+    <div class="grid">
+      <div class="card">
+        <h2>Recent calls <button class="btn secondary" id="calls-refresh" style="float:right;padding:4px 10px">Refresh</button></h2>
+        <table><thead><tr><th>id</th><th>dir</th><th>status</th><th>dur</th><th>outcome</th></tr></thead><tbody id="calls-body"></tbody></table>
+      </div>
+      <div class="card">
+        <h2>Call detail</h2>
+        <div id="call-detail"><small>Select a call.</small></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------------------ AGENT -->
+  <section class="tab" id="tab-agent">
+    <div class="grid">
+      <div class="card">
+        <h2>Agent config (JSON, includes workflow)</h2>
+        <div class="row">
+          <button class="btn secondary" id="agent-load-example">Load EO example</button>
+          <button class="btn secondary" id="agent-validate">Validate</button>
+        </div>
+        <div class="row" style="margin-top:8px"><input id="agent-id" value="ui-agent" /><button class="btn" id="agent-save">Save as version</button></div>
+        <div class="status" id="agent-status"></div>
+      </div>
+      <div class="card"><textarea id="agent-json" class="tall" spellcheck="false"></textarea></div>
+    </div>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

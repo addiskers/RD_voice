@@ -1,0 +1,48 @@
+[project]
+name = "gvox-voice"
+version = "0.1.0"
+description = "GlobalVox Voice Engine: carrier WebSocket -> LiveKit Agents conversation runtime, with a Vapi-style REST API and webhooks."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "livekit-agents[silero,turn-detector,deepgram,google,anthropic,cartesia,elevenlabs,sarvam]~=1.8",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "sqlalchemy[asyncio]>=2.0",
+    "aiosqlite>=0.20",
+    "python-dotenv>=1.0",
+    "python-multipart>=0.0.9",
+    "numpy>=1.26",
+    "websockets>=12",
+    "aiohttp>=3.9",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+postgres = ["asyncpg>=0.29"]
+plivo-transport = ["agent-transport[livekit]"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5"]
+
+[project.scripts]
+gvox-api = "engine.api.app:main"
+gvox-worker = "engine.worker.main:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["engine*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = ["integration: needs real provider keys / a phone number (skipped by default)"]
+addopts = "-m 'not integration'"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"

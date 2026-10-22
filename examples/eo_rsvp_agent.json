@@ -1,0 +1,46 @@
+{
+  "name": "EO Gujarat RSVP caller",
+  "mode": "cascaded",
+  "language": "en-IN",
+  "stt": {"provider": "deepgram", "model": "nova-3", "options": {"language": "multi"}},
+  "llm": {"provider": "google", "model": "gemini-2.5-flash", "options": {"temperature": 0.4}},
+  "tts": {"provider": "cartesia", "model": "sonic-3", "voice": "", "language": "en"},
+  "realtime": {"provider": "google", "model": "gemini-2.5-flash-native-audio-preview-12-2025", "voice": "Aoede"},
+  "turn": {
+    "detector": "multilingual",
+    "min_endpointing_delay": 0.25,
+    "max_endpointing_delay": 2.0,
+    "interruption_mode": "adaptive",
+    "false_interruption_timeout": 2.0,
+    "resume_false_interruption": true,
+    "preemptive_generation": true,
+    "user_away_timeout": 12.0
+  },
+  "guards": {"enabled": true, "max_sentences": 4, "single_closing": true, "suppress_repeats": true},
+  "tools": [
+    {
+      "id": "record_outcome",
+      "type": "builtin",
+      "builtin": "record_outcome",
+      "name": "record_outcome",
+      "description": "Record the member's final RSVP outcome. Call it once the answer is clear.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "status": {"type": "string", "enum": ["yes", "no", "callback", "voicemail", "wrong_number", "already_registered"]},
+          "callback_time": {"type": "string", "description": "When to call back, if status is callback"},
+          "spouse_joining": {"type": "boolean"},
+          "kids_joining": {"type": "boolean"},
+          "kids_count": {"type": "integer"},
+          "note": {"type": "string", "description": "One-line remark for the organiser"}
+        },
+        "required": ["status"]
+      }
+    },
+    {"id": "end_call", "type": "builtin", "builtin": "end_call", "name": "end_call",
+     "description": "End the call after the closing line has been spoken."}
+  ],
+  "max_duration_s": 420,
+  "record": true,
+  "metadata": {"client": "EO Gujarat"}
+}

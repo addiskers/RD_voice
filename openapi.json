@@ -1,0 +1,3024 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "GlobalVox Voice Engine",
+    "description": "Carrier WebSocket -> LiveKit Agents conversation runtime, driven by a REST API.",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "ops"
+        ],
+        "summary": "Health",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/capacity": {
+      "get": {
+        "tags": [
+          "ops"
+        ],
+        "summary": "Capacity",
+        "operationId": "capacity_v1_capacity_get",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Capacity"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{agent_id}": {
+      "put": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "Put Agent",
+        "operationId": "put_agent_v1_agents__agent_id__put",
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Agent Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentConfig"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentVersionOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "Get Agent",
+        "operationId": "get_agent_v1_agents__agent_id__get",
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Agent Id"
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Version"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentVersionOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{agent_id}/versions": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "List Versions",
+        "operationId": "list_versions_v1_agents__agent_id__versions_get",
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Agent Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/validate": {
+      "post": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "Validate Agent",
+        "operationId": "validate_agent_v1_agents_validate_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentConfig"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/numbers/{e164}": {
+      "put": {
+        "tags": [
+          "numbers"
+        ],
+        "summary": "Put Number",
+        "operationId": "put_number_v1_numbers__e164__put",
+        "parameters": [
+          {
+            "name": "e164",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "E164"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NumberIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/numbers": {
+      "get": {
+        "tags": [
+          "numbers"
+        ],
+        "summary": "List Numbers",
+        "operationId": "list_numbers_v1_numbers_get",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/calls": {
+      "post": {
+        "tags": [
+          "calls"
+        ],
+        "summary": "Create Call",
+        "operationId": "create_call_v1_calls_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CallCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallCreated"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "calls"
+        ],
+        "summary": "List Calls",
+        "operationId": "list_calls_v1_calls_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/calls/{call_id}": {
+      "get": {
+        "tags": [
+          "calls"
+        ],
+        "summary": "Get Call",
+        "operationId": "get_call_v1_calls__call_id__get",
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Call Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallRecord"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/calls/{call_id}/hangup": {
+      "post": {
+        "tags": [
+          "calls"
+        ],
+        "summary": "Hangup Call",
+        "operationId": "hangup_call_v1_calls__call_id__hangup_post",
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Call Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/calls/{call_id}/say": {
+      "post": {
+        "tags": [
+          "calls"
+        ],
+        "summary": "Say",
+        "operationId": "say_v1_calls__call_id__say_post",
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Call Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SayIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/calls/{call_id}/transfer": {
+      "post": {
+        "tags": [
+          "calls"
+        ],
+        "summary": "Transfer",
+        "operationId": "transfer_v1_calls__call_id__transfer_post",
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Call Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransferIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/calls/{call_id}/recording": {
+      "get": {
+        "tags": [
+          "calls"
+        ],
+        "summary": "Recording",
+        "operationId": "recording_v1_calls__call_id__recording_get",
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Call Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/carrier/{provider}/answer": {
+      "get": {
+        "tags": [
+          "carrier"
+        ],
+        "summary": "Carrier Answer",
+        "operationId": "carrier_answer_carrier__provider__answer_get",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Provider"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "carrier"
+        ],
+        "summary": "Carrier Answer",
+        "operationId": "carrier_answer_carrier__provider__answer_get",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Provider"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/carrier/{provider}/ring": {
+      "get": {
+        "tags": [
+          "carrier"
+        ],
+        "summary": "Carrier Ring",
+        "operationId": "carrier_ring_carrier__provider__ring_get",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Provider"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "carrier"
+        ],
+        "summary": "Carrier Ring",
+        "operationId": "carrier_ring_carrier__provider__ring_get",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Provider"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/carrier/{provider}/hangup": {
+      "get": {
+        "tags": [
+          "carrier"
+        ],
+        "summary": "Carrier Hangup",
+        "operationId": "carrier_hangup_carrier__provider__hangup_get",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Provider"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "carrier"
+        ],
+        "summary": "Carrier Hangup",
+        "operationId": "carrier_hangup_carrier__provider__hangup_get",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Provider"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/calls/{call_id}/runtime": {
+      "get": {
+        "tags": [
+          "internal"
+        ],
+        "summary": "Runtime",
+        "operationId": "runtime_internal_calls__call_id__runtime_get",
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Call Id"
+            }
+          },
+          {
+            "name": "x-internal-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/calls/by-provider/{provider_call_id}/runtime": {
+      "get": {
+        "tags": [
+          "internal"
+        ],
+        "summary": "Runtime By Provider",
+        "description": "The media stream's `start` frame carries the carrier CallUUID; the answer webhook stored it.",
+        "operationId": "runtime_by_provider_internal_calls_by_provider__provider_call_id__runtime_get",
+        "parameters": [
+          {
+            "name": "provider_call_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Provider Call Id"
+            }
+          },
+          {
+            "name": "x-internal-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/calls/{call_id}/events": {
+      "post": {
+        "tags": [
+          "internal"
+        ],
+        "summary": "Worker Event",
+        "operationId": "worker_event_internal_calls__call_id__events_post",
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Call Id"
+            }
+          },
+          {
+            "name": "x-internal-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkerEvent"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/calls/browser": {
+      "post": {
+        "tags": [
+          "internal"
+        ],
+        "summary": "Browser Call",
+        "operationId": "browser_call_internal_calls_browser_post",
+        "parameters": [
+          {
+            "name": "x-internal-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrowserCallIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AgentConfig": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "default": "agent"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/Mode",
+            "default": "cascaded"
+          },
+          "language": {
+            "type": "string",
+            "title": "Language",
+            "default": "en-IN"
+          },
+          "stt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "llm": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VoiceRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "realtime": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VoiceRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Speech-to-speech model (mode=s2s)"
+          },
+          "turn": {
+            "$ref": "#/components/schemas/TurnConfig"
+          },
+          "guards": {
+            "$ref": "#/components/schemas/GuardConfig"
+          },
+          "instructions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instructions",
+            "description": "Single-prompt agent (no workflow)"
+          },
+          "greeting": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Greeting",
+            "description": "Spoken verbatim at call start (single-prompt agents)"
+          },
+          "workflow": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Workflow"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/ToolDef"
+            },
+            "type": "array",
+            "title": "Tools"
+          },
+          "documents": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Documents",
+            "description": "Knowledge document ids attached to the agent"
+          },
+          "max_duration_s": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 3600.0,
+                "minimum": 10.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Duration S"
+          },
+          "record": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          }
+        },
+        "type": "object",
+        "title": "AgentConfig"
+      },
+      "AgentRef": {
+        "properties": {
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version",
+            "description": "Defaults to the latest version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "agent_id"
+        ],
+        "title": "AgentRef"
+      },
+      "AgentVersionOut": {
+        "properties": {
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "config": {
+            "$ref": "#/components/schemas/AgentConfig"
+          }
+        },
+        "type": "object",
+        "required": [
+          "agent_id",
+          "version",
+          "created_at",
+          "config"
+        ],
+        "title": "AgentVersionOut"
+      },
+      "BrowserCallIn": {
+        "properties": {
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "agent_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Version"
+          },
+          "agent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "variables": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Variables"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          },
+          "webhook_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Url"
+          }
+        },
+        "type": "object",
+        "title": "BrowserCallIn"
+      },
+      "CallCreate": {
+        "properties": {
+          "to": {
+            "type": "string",
+            "minLength": 3,
+            "title": "To",
+            "description": "E.164 destination, e.g. +919876543210"
+          },
+          "from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider",
+            "description": "plivo | vobiz | enablex (engine default if omitted)"
+          },
+          "agent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentRef"
+              },
+              {
+                "$ref": "#/components/schemas/AgentConfig"
+              }
+            ],
+            "title": "Agent"
+          },
+          "variables": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Variables",
+            "description": "{{template}} values for prompts"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata",
+            "description": "Echoed back on every webhook"
+          },
+          "webhook_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Url"
+          },
+          "webhook_secret": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Secret",
+            "description": "Per-call HMAC secret (engine default if omitted)"
+          },
+          "record": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record"
+          },
+          "max_duration_s": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 3600.0,
+                "minimum": 10.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Duration S"
+          }
+        },
+        "type": "object",
+        "required": [
+          "to",
+          "agent"
+        ],
+        "title": "CallCreate"
+      },
+      "CallCreated": {
+        "properties": {
+          "call_id": {
+            "type": "string",
+            "title": "Call Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CallStatus"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "provider_call_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Call Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "call_id",
+          "status",
+          "provider"
+        ],
+        "title": "CallCreated"
+      },
+      "CallMetrics": {
+        "properties": {
+          "turns": {
+            "items": {
+              "$ref": "#/components/schemas/TurnMetrics"
+            },
+            "type": "array",
+            "title": "Turns"
+          },
+          "total_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total P50"
+          },
+          "total_p95": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total P95"
+          },
+          "llm_ttft_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llm Ttft P50"
+          },
+          "tts_ttfb_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tts Ttfb P50"
+          },
+          "eou_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eou P50"
+          },
+          "pickup_to_first_word": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pickup To First Word"
+          },
+          "usage": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Usage",
+            "description": "tokens / characters / seconds per provider"
+          }
+        },
+        "type": "object",
+        "title": "CallMetrics"
+      },
+      "CallRecord": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CallStatus"
+          },
+          "direction": {
+            "$ref": "#/components/schemas/Direction"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "to": {
+            "type": "string",
+            "title": "To"
+          },
+          "from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From"
+          },
+          "provider_call_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Call Id"
+          },
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "agent_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Version"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "answered_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answered At"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "duration_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration S"
+          },
+          "end_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Reason"
+          },
+          "hangup_cause": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hangup Cause"
+          },
+          "outcome": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Outcome",
+            "description": "record_outcome tool payloads, extraction vars"
+          },
+          "variables": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Variables"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          },
+          "transcript": {
+            "items": {
+              "$ref": "#/components/schemas/TranscriptTurn"
+            },
+            "type": "array",
+            "title": "Transcript"
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/CallMetrics"
+          },
+          "recording_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recording Url"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "direction",
+          "provider",
+          "to",
+          "created_at"
+        ],
+        "title": "CallRecord"
+      },
+      "CallStatus": {
+        "type": "string",
+        "enum": [
+          "queued",
+          "dialing",
+          "ringing",
+          "in_progress",
+          "completed",
+          "failed",
+          "busy",
+          "no_answer",
+          "cancelled"
+        ],
+        "title": "CallStatus"
+      },
+      "Capacity": {
+        "properties": {
+          "active_calls": {
+            "type": "integer",
+            "title": "Active Calls"
+          },
+          "max_concurrent_calls": {
+            "type": "integer",
+            "title": "Max Concurrent Calls"
+          },
+          "available": {
+            "type": "integer",
+            "title": "Available"
+          },
+          "accepting": {
+            "type": "boolean",
+            "title": "Accepting"
+          }
+        },
+        "type": "object",
+        "required": [
+          "active_calls",
+          "max_concurrent_calls",
+          "available",
+          "accepting"
+        ],
+        "title": "Capacity"
+      },
+      "Direction": {
+        "type": "string",
+        "enum": [
+          "outbound",
+          "inbound",
+          "browser"
+        ],
+        "title": "Direction"
+      },
+      "Edge": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Id"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "target": {
+            "type": "string",
+            "title": "Target"
+          },
+          "data": {
+            "$ref": "#/components/schemas/EdgeData"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "source",
+          "target",
+          "data"
+        ],
+        "title": "Edge"
+      },
+      "EdgeData": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Label",
+            "description": "Becomes the transition tool name"
+          },
+          "condition": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Condition",
+            "description": "When to take this edge; becomes the tool description"
+          },
+          "transition_speech": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transition Speech",
+            "description": "Spoken verbatim while switching nodes"
+          },
+          "transition_speech_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transition Speech Type",
+            "default": "text"
+          },
+          "transition_speech_recording_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transition Speech Recording Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "condition"
+        ],
+        "title": "EdgeData"
+      },
+      "ExtractionVariable": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name",
+            "description": "snake_case identifier used downstream"
+          },
+          "type": {
+            "$ref": "#/components/schemas/VariableType",
+            "default": "string"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt",
+            "description": "Per-variable hint describing what to look for"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "ExtractionVariable"
+      },
+      "GuardConfig": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "max_sentences": {
+            "type": "integer",
+            "maximum": 12.0,
+            "minimum": 1.0,
+            "title": "Max Sentences",
+            "description": "Cap per agent turn (cascaded mode only)",
+            "default": 4
+          },
+          "single_closing": {
+            "type": "boolean",
+            "title": "Single Closing",
+            "default": true
+          },
+          "closing_markers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Closing Markers"
+          },
+          "suppress_repeats": {
+            "type": "boolean",
+            "title": "Suppress Repeats",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "GuardConfig"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "Mode": {
+        "type": "string",
+        "enum": [
+          "cascaded",
+          "s2s"
+        ],
+        "title": "Mode"
+      },
+      "Node": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Id"
+          },
+          "type": {
+            "$ref": "#/components/schemas/NodeType"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NodeData"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Position"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "data"
+        ],
+        "title": "Node"
+      },
+      "NodeData": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt",
+            "description": "System prompt for this node; supports {{vars}}"
+          },
+          "allow_interrupt": {
+            "type": "boolean",
+            "title": "Allow Interrupt",
+            "default": true
+          },
+          "add_global_prompt": {
+            "type": "boolean",
+            "title": "Add Global Prompt",
+            "default": true
+          },
+          "extraction_enabled": {
+            "type": "boolean",
+            "title": "Extraction Enabled",
+            "default": false
+          },
+          "extraction_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extraction Prompt"
+          },
+          "extraction_variables": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ExtractionVariable"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extraction Variables"
+          },
+          "tool_uuids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Uuids",
+            "description": "Tool ids this node may invoke"
+          },
+          "document_uuids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Uuids",
+            "description": "Knowledge documents this node may use"
+          },
+          "greeting": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Greeting",
+            "description": "Spoken verbatim at call start; supports {{vars}}"
+          },
+          "greeting_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Greeting Type",
+            "description": "'text' (TTS) or 'audio' (recording id)",
+            "default": "text"
+          },
+          "greeting_recording_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Greeting Recording Id"
+          },
+          "delayed_start": {
+            "type": "boolean",
+            "title": "Delayed Start",
+            "default": false
+          },
+          "delayed_start_duration": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 10.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delayed Start Duration"
+          },
+          "is_start": {
+            "type": "boolean",
+            "title": "Is Start",
+            "default": false
+          },
+          "is_end": {
+            "type": "boolean",
+            "title": "Is End",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "NodeData",
+        "description": "Union of the per-type node data; type-specific rules are enforced in validation."
+      },
+      "NodeType": {
+        "type": "string",
+        "enum": [
+          "startCall",
+          "agentNode",
+          "globalNode",
+          "endCall"
+        ],
+        "title": "NodeType"
+      },
+      "NumberIn": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider",
+            "default": "plivo"
+          },
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "agent_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Version"
+          },
+          "route_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Route Url",
+            "description": "Platform endpoint returning per-call variables"
+          },
+          "webhook_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Url"
+          },
+          "webhook_secret": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Secret"
+          }
+        },
+        "type": "object",
+        "title": "NumberIn"
+      },
+      "Position": {
+        "properties": {
+          "x": {
+            "type": "number",
+            "title": "X",
+            "default": 0.0
+          },
+          "y": {
+            "type": "number",
+            "title": "Y",
+            "default": 0.0
+          }
+        },
+        "type": "object",
+        "title": "Position"
+      },
+      "ProviderRef": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider",
+            "description": "deepgram | sarvam | google | anthropic | openai | groq | cartesia | elevenlabs ..."
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key",
+            "description": "BYOK; falls back to the engine's key"
+          },
+          "options": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Options",
+            "description": "Provider-specific constructor kwargs"
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider"
+        ],
+        "title": "ProviderRef"
+      },
+      "SayIn": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Text"
+          },
+          "allow_interruptions": {
+            "type": "boolean",
+            "title": "Allow Interruptions",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "SayIn"
+      },
+      "ToolDef": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Id"
+          },
+          "type": {
+            "$ref": "#/components/schemas/ToolType"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name",
+            "description": "Function name the LLM sees (a-z, 0-9, _)"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "parameters": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Parameters",
+            "description": "JSON schema of the arguments"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          },
+          "method": {
+            "type": "string",
+            "title": "Method",
+            "default": "POST"
+          },
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Headers"
+          },
+          "timeout_s": {
+            "type": "number",
+            "title": "Timeout S",
+            "default": 8.0
+          },
+          "speak_while_running": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speak While Running",
+            "description": "Filler line spoken during a slow tool"
+          },
+          "mcp_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mcp Url"
+          },
+          "mcp_headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Mcp Headers"
+          },
+          "builtin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Builtin"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "name"
+        ],
+        "title": "ToolDef"
+      },
+      "ToolType": {
+        "type": "string",
+        "enum": [
+          "http",
+          "mcp",
+          "builtin"
+        ],
+        "title": "ToolType"
+      },
+      "TranscriptTurn": {
+        "properties": {
+          "role": {
+            "type": "string",
+            "title": "Role",
+            "description": "user | agent | tool | system"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "at": {
+            "type": "number",
+            "title": "At",
+            "description": "seconds since call start",
+            "default": 0.0
+          },
+          "node": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Node"
+          },
+          "interrupted": {
+            "type": "boolean",
+            "title": "Interrupted",
+            "default": false
+          },
+          "extra": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Extra"
+          }
+        },
+        "type": "object",
+        "required": [
+          "role",
+          "text"
+        ],
+        "title": "TranscriptTurn"
+      },
+      "TransferIn": {
+        "properties": {
+          "to": {
+            "type": "string",
+            "minLength": 3,
+            "title": "To"
+          },
+          "announce": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Announce"
+          }
+        },
+        "type": "object",
+        "required": [
+          "to"
+        ],
+        "title": "TransferIn"
+      },
+      "TurnConfig": {
+        "properties": {
+          "detector": {
+            "type": "string",
+            "title": "Detector",
+            "description": "multilingual | english | vad | stt | realtime",
+            "default": "multilingual"
+          },
+          "min_endpointing_delay": {
+            "type": "number",
+            "title": "Min Endpointing Delay",
+            "default": 0.4
+          },
+          "max_endpointing_delay": {
+            "type": "number",
+            "title": "Max Endpointing Delay",
+            "default": 3.0
+          },
+          "allow_interruptions": {
+            "type": "boolean",
+            "title": "Allow Interruptions",
+            "default": true
+          },
+          "interruption_mode": {
+            "type": "string",
+            "title": "Interruption Mode",
+            "description": "adaptive | vad",
+            "default": "adaptive"
+          },
+          "min_interruption_duration": {
+            "type": "number",
+            "title": "Min Interruption Duration",
+            "default": 0.5
+          },
+          "min_interruption_words": {
+            "type": "integer",
+            "title": "Min Interruption Words",
+            "default": 0
+          },
+          "false_interruption_timeout": {
+            "type": "number",
+            "title": "False Interruption Timeout",
+            "default": 2.0
+          },
+          "resume_false_interruption": {
+            "type": "boolean",
+            "title": "Resume False Interruption",
+            "default": true
+          },
+          "preemptive_generation": {
+            "type": "boolean",
+            "title": "Preemptive Generation",
+            "default": true
+          },
+          "user_away_timeout": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Away Timeout",
+            "description": "Seconds of silence before a nudge",
+            "default": 15.0
+          }
+        },
+        "type": "object",
+        "title": "TurnConfig"
+      },
+      "TurnMetrics": {
+        "properties": {
+          "turn": {
+            "type": "integer",
+            "title": "Turn"
+          },
+          "eou_delay": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eou Delay",
+            "description": "end of user speech -> turn committed"
+          },
+          "stt_delay": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stt Delay",
+            "description": "final transcript delay"
+          },
+          "llm_ttft": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llm Ttft",
+            "description": "LLM time to first token"
+          },
+          "tts_ttfb": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tts Ttfb",
+            "description": "TTS time to first byte"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total",
+            "description": "end of user speech -> first agent audio"
+          },
+          "at": {
+            "type": "number",
+            "title": "At",
+            "description": "seconds since call start",
+            "default": 0.0
+          }
+        },
+        "type": "object",
+        "required": [
+          "turn"
+        ],
+        "title": "TurnMetrics",
+        "description": "One agent turn, all values in seconds (None when the stage does not apply, e.g. S2S)."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "VariableType": {
+        "type": "string",
+        "enum": [
+          "string",
+          "number",
+          "boolean"
+        ],
+        "title": "VariableType"
+      },
+      "VoiceRef": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider",
+            "description": "deepgram | sarvam | google | anthropic | openai | groq | cartesia | elevenlabs ..."
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key",
+            "description": "BYOK; falls back to the engine's key"
+          },
+          "options": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Options",
+            "description": "Provider-specific constructor kwargs"
+          },
+          "voice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voice",
+            "description": "Voice id / speaker name for TTS or realtime"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
+          "speed": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider"
+        ],
+        "title": "VoiceRef"
+      },
+      "WorkerEvent": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seq"
+          },
+          "data": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Data"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "title": "WorkerEvent"
+      },
+      "Workflow": {
+        "properties": {
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/Node"
+            },
+            "type": "array",
+            "title": "Nodes"
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/Edge"
+            },
+            "type": "array",
+            "title": "Edges"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "nodes",
+          "edges"
+        ],
+        "title": "Workflow"
+      }
+    }
+  }
+}
