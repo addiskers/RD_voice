@@ -82,6 +82,24 @@ def unwrap_llm(obj: Any) -> Any:
     return getattr(obj, "_llm_instances", [obj])[0]
 
 
+def model_labels(session: AgentSession) -> dict[str, str]:
+    """``{"stt": "deepgram nova-3", "llm": "google gemini-2.5-flash-lite", "tts": "cartesia sonic-3"}`` for the
+    primary component of each stage (what the call was configured with)."""
+    out: dict[str, str] = {}
+    for kind in ("stt", "llm", "tts"):
+        comp = getattr(session, kind, None)
+        if comp is None:
+            continue
+        primary = getattr(comp, f"_{kind}_instances", [comp])[0]
+        model = getattr(primary, "model", None)
+        try:
+            model = str(model) if model else ""
+        except Exception:
+            model = ""
+        out[kind] = (provider_id(primary) + (" " + model if model else "")).strip()
+    return out
+
+
 def provider_labels(session: AgentSession) -> dict[str, str]:
     """Vendor currently serving each stage (looks through FallbackAdapters)."""
     out: dict[str, str] = {}

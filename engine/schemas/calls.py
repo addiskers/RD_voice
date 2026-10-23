@@ -64,10 +64,14 @@ class TurnMetrics(BaseModel):
     stt_provider: Optional[str] = Field(default=None, description="vendor that served this turn (failover visible)")
     llm_provider: Optional[str] = None
     tts_provider: Optional[str] = None
+    node: Optional[str] = Field(default=None, description="workflow node the agent was in for this turn")
+    transition: bool = Field(default=False, description="the node changed since the previous turn: this reply paid "
+                             "an extra LLM round-trip for the handoff")
 
 
 class CallMetrics(BaseModel):
     turns: list[TurnMetrics] = Field(default_factory=list)
+    models: dict[str, str] = Field(default_factory=dict, description='{"stt": "deepgram nova-3", "llm": ..., "tts": ...}')
     provider_events: list[dict[str, Any]] = Field(default_factory=list,
                                                   description="availability changes: {kind, provider, available, at}")
     total_p50: Optional[float] = None

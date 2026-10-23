@@ -83,7 +83,7 @@ def apply_overrides(agent: dict[str, Any], args) -> dict[str, Any]:
     if agent.get("mode", "cascaded") != "cascaded":
         return agent
     if args.stt:
-        agent["stt"] = ({"provider": "sarvam", "model": "saarika:v2.5", "options": {"language": "unknown"}} if args.stt == "sarvam"
+        agent["stt"] = ({"provider": "sarvam", "model": "saaras:v4", "options": {"language": "unknown"}} if args.stt == "sarvam"
                         else {"provider": "deepgram", "model": args.stt, "options": {"language": "multi"}})
     if args.llm:
         if args.llm.startswith("groq:"):
@@ -251,6 +251,10 @@ async def run_call(args, idx: int, utterances: list[list[bytes]], http: httpx.As
                engine_total_s=[t["total"] for t in turns], utterances_spoken=state["utt"],
                agent_turns=sum(1 for t in record.get("transcript", []) if t.get("role") == "agent"),
                user_turns=sum(1 for t in record.get("transcript", []) if t.get("role") == "user"),
+               user_texts=[t.get("text", "") for t in record.get("transcript", []) if t.get("role") == "user"],
+               stages=[{k: t.get(k) for k in ("turn", "eou_delay", "llm_ttft", "tts_ttfb", "total", "transition")}
+                       for t in turns],
+               models=(record.get("metrics") or {}).get("models"),
                recording_url=record.get("recording_url"))
     engine_ended = record.get("end_reason") in ("workflow_end", "agent_end_call", "closing_detected", "max_duration")
     res["ok"] = (record.get("status") == "completed" and not res["dropped"] and res["agent_audio_s"] > 0.5

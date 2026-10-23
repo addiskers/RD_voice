@@ -120,6 +120,49 @@ First measurement over the real 8 kHz mu-law endpoint with the EO example agent 
 re-run `python scripts/latency_bench.py --runs 3 --path telephony` on the deploy box to produce the table that
 replaces them.
 
+### STT / LLM / TTS on Indian-accented phone audio (2026-10-23, one run per cell)
+Caller audio synthesised with Sarvam bulbul (Indian voice `rahul`), band-limited and G.711-companded,
+played through the real worker media endpoint into the EO workflow. Columns are seconds: `eou` = caller stops
+→ turn committed, `ttft` = LLM first token, `ttfb` = TTS first byte, `total` = caller stops → agent audio.
+WER = word error rate of the STT transcript against the script. Generate more clips with
+`python scripts/make_utterance.py "text" out.wav --voice sarvam:rahul --lang hi-IN --telephony`; rerun with
+`python scripts/latency_bench.py --path telephony --wav scripts/assets/tel_in_user_yes.wav --expect "..." --stt ... --llm ... --tts ...`.
+
+English, Indian accent: "Yes, I can hear you clearly. What is this call about?" (TTS Cartesia)
+
+| LLM | STT | WER | eou | ttft | ttfb | total |
+|---|---|---|---|---|---|---|
+| gemini-2.5-flash-lite | nova-3 (multi) | 0.00 | 0.46 | 0.88 | 0.15 | 2.52 |
+| gemini-2.5-flash-lite | **flux-general-multi** | 0.00 | **0.26** | 0.88 | 0.16 | **2.17** |
+| gemini-2.5-flash-lite | sarvam saaras:v4 | 0.00 | 0.74 | 1.09 | 0.14 | 3.08 |
+| gemini-2.5-flash | nova-3 (multi) | 0.18 ("clearly" → प्रिया जी) | 0.51 | 1.29 | 0.14 | 3.44 |
+| gemini-2.5-flash | flux-general-multi | 0.00 | 0.26 | 1.04 | 0.15 | 2.36 |
+| gemini-2.5-flash | sarvam saaras:v4 | 0.00 | 0.73 | 1.29 | 0.55 | 3.80 |
+| groq gpt-oss-20b | nova-3 (multi) | 0.18 (same hallucination) | 0.50 | **0.51** | 0.14 | 4.09 |
+| **groq gpt-oss-20b** | **flux-general-multi** | 0.00 | 0.26 | **0.55** | 0.14 | **2.15** |
+| groq gpt-oss-20b | sarvam saaras:v4 | 0.00 | 0.79 | 0.63 | 0.16 | 2.48 |
+
+Hindi: "हाँ, मैं सुन सकता हूँ। यह कॉल किस बारे में है?" (LLM Flash-Lite, TTS Cartesia)
+
+| STT | heard | WER | eou | total |
+|---|---|---|---|---|
+| nova-3 (multi) | "Huh? मैं sun सकता हूं. यह call किस बारे में है?" | 0.36 | 0.48 | 2.80 |
+| flux-general-multi | "हां, मैं sun सकता हूं यह call किस बारे में है?" | 0.36 | 0.26 | 2.57 |
+| **sarvam saaras:v4** | "मैं सुन सकता हूँ। यह कॉल किस बारे में है?" | **0.18** | 0.78 | 3.16 |
+
+TTS first byte (STT Flux, LLM Flash-Lite): Cartesia sonic-3 **0.15 s**, Sarvam bulbul:v3 0.21 s; ElevenLabs not
+configured on this engine.
+
+What the numbers say. The three model stages add up to about 1.3 s on the best row (0.26 + 0.55 + 0.14);
+the rest of each `total` is the EO workflow's node handoff (the "yes" moves identity → invite, which is a
+second LLM round-trip of roughly a second) plus hops to the vendors. On Indian-accented English, Deepgram
+nova-3 in `multi` mode twice hallucinated Devanagari into an English sentence; Flux and Sarvam did not. On
+Hindi, only Sarvam kept the sentence in one script; Deepgram's models returned mixed-script Hinglish, which
+an LLM copes with but a TTS reads badly. Fastest first token by far is Groq's gpt-oss-20b, with the caveat
+from the earlier browser tests that it ignored the Hindi language policy. The Calls tab now shows this
+breakdown per turn (end of turn, LLM first token, TTS first byte, other) with a `+handoff` marker on turns
+that paid a transition, and the models the call ran on.
+
 ## Latency (browser path, laptop in India, 2026-09-08; `scripts/latency_bench.py --runs 2 --path browser`)
 `total` = end of the caller's speech → agent audio starts (user-perceived), p50 over the runs; STT column = exact
 transcription of the synthesized utterance. **Measured over the 16 kHz browser transport, not the phone path.**

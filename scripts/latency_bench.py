@@ -12,7 +12,6 @@ import argparse
 import itertools
 import json
 import os
-import statistics
 import subprocess
 import sys
 
@@ -20,6 +19,29 @@ import httpx
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PY = sys.executable
+# transcripts are Hindi/Gujarati text and curly quotes: never let a cp1252 console kill a bench run
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+
+def wer(expected: str, got: str) -> float | None:
+    """Word error rate of ``got`` against ``expected`` (lower-cased, punctuation stripped). None when no expectation."""
+    import re
+    if not expected:
+        return None
+    norm = lambda s: re.sub(r"[^\w\sऀ-෿]", " ", s.lower()).split()  # noqa: E731
+    ref, hyp = norm(expected), norm(got or "")
+    d = list(range(len(hyp) + 1))
+    for i in range(1, len(ref) + 1):
+        prev, d[0] = d[0], i
+        for j in range(1, len(hyp) + 1):
+            cur = d[j]
+            d[j] = min(d[j] + 1, d[j - 1] + 1, prev + (ref[i - 1] != hyp[j - 1]))
+            prev = cur
+    return round(d[len(hyp)] / max(1, len(ref)), 3)
 
 
 def pct(values: list[float], p: float) -> float | None:
@@ -48,7 +70,7 @@ def run_once(args, llm: str, stt: str, tts: str) -> dict:
     if args.path == "telephony":
         call = (res.get("per_call") or [{}])[0]
         res = {"ok": bool(res.get("ok")), "call_id": call.get("call_id"), "reply_latency_s": call.get("client_latency_s"),
-               "events": call.get("events")}
+               "events": call.get("events"), "user_texts": call.get("user_texts") or [], "models": call.get("models")}
     if res.get("call_id"):
         try:
             r = httpx.get(f"{args.api}/v1/calls/{res['call_id']}", headers={"Authorization": f"Bearer {args.key}"},
@@ -72,6 +94,7 @@ def main() -> int:
     ap.add_argument("--api", default=os.environ.get("ENGINE_URL", "http://127.0.0.1:8080"))
     ap.add_argument("--key", default=os.environ.get("ENGINE_API_KEY", "dev-engine-key"))
     ap.add_argument("--internal-token", default=os.environ.get("INTERNAL_TOKEN", ""))
+    ap.add_argument("--expect", default="", help="what the caller WAV says; prints the STT word error rate per config")
     ap.add_argument("--path", default="telephony", choices=["telephony", "browser"],
                     help="telephony = fake carrier over the worker media endpoint (8 kHz); browser = 16 kHz test path")
     args = ap.parse_args()
@@ -85,6 +108,8 @@ def main() -> int:
                                           "first_word": []}
         oks = 0
         exact = 0
+        wers: list[float] = []
+        models: dict = {}
         for i in range(args.runs):
             res = run_once(args, llm, stt, tts)
             oks += 1 if res.get("ok") else 0
@@ -99,12 +124,21 @@ def main() -> int:
                         stages[k].append(t[src])
             if m.get("pickup_to_first_word") is not None:
                 stages["first_word"].append(m["pickup_to_first_word"])
-            user_text = " ".join(x[1] for x in res.get("transcript", []) if x[0] == "user").lower()
-            if "hear you" in user_text:
+            user_texts = [x[1] for x in res.get("transcript", []) if x[0] == "user"]
+            user_text = user_texts[0] if user_texts else ""
+            w = wer(args.expect, user_text) if args.expect else None
+            if w is not None:
+                wers.append(w)
+                if w <= 0.3:
+                    exact += 1
+            elif "hear you" in user_text.lower():
                 exact += 1
+            models = models or (m.get("models") or {})
             print(f"  [{llm} | {stt} | {tts}] run {i + 1}: ok={res.get('ok')} total={turns[-1]['total'] if turns else None} "
-                  f"ttft={turns[-1].get('llm_ttft') if turns else None} err={res.get('error', '')[:80]}", flush=True)
+                  f"ttft={turns[-1].get('llm_ttft') if turns else None} wer={w} heard={user_text[:60]!r} "
+                  f"err={res.get('error', '')[:80]}", flush=True)
         row = {"llm": llm, "stt": stt, "tts": tts, "runs": args.runs, "ok": oks, "stt_ok": exact,
+               "wer_mean": round(sum(wers) / len(wers), 3) if wers else None, "models": models,
                **{f"{k}_p50": pct(v, 50) for k, v in stages.items()},
                **{f"{k}_p95": pct(v, 95) for k, v in stages.items()}}
         rows.append(row)
@@ -112,11 +146,14 @@ def main() -> int:
     def f(v):
         return "  —  " if v is None else f"{v:5.2f}"
 
-    print("\nconfig                                              | ok | stt | total p50/p95 | eou  | stt  | ttft | ttfb | first")
+    print("\nconfig (llm | stt | tts)                            | ok  | stt ok | WER  | total p50/p95 | eou  | ttft | ttfb | first")
     for r in rows:
         name = f"{r['llm']} | {r['stt']} | {r['tts']}"
-        print(f"{name:52s}| {r['ok']}/{r['runs']} | {r['stt_ok']}/{r['runs']} | {f(r['total_p50'])}/{f(r['total_p95'])} | "
-              f"{f(r['eou_p50'])} | {f(r['stt_p50'])} | {f(r['llm_ttft_p50'])} | {f(r['tts_ttfb_p50'])} | {f(r['first_word_p50'])}")
+        w = " —  " if r.get("wer_mean") is None else f"{r['wer_mean']:4.2f}"
+        print(f"{name:52s}| {r['ok']}/{r['runs']} | {r['stt_ok']}/{r['runs']}    | {w} | {f(r['total_p50'])}/{f(r['total_p95'])} | "
+              f"{f(r['eou_p50'])} | {f(r['llm_ttft_p50'])} | {f(r['tts_ttfb_p50'])} | {f(r['first_word_p50'])}")
+    if rows and rows[0].get("models"):
+        print("models:", rows[0]["models"])
     with open(os.path.join(HERE, "..", "data", "latency_bench.json"), "w", encoding="utf-8") as fh:
         json.dump(rows, fh, indent=2)
     return 0

@@ -53,7 +53,10 @@ class CallReporter:
             except Exception:
                 pass
         p = self.current_providers
-        return TurnMetrics(stt_provider=p.get("stt"), llm_provider=p.get("llm"), tts_provider=p.get("tts"), **kwargs)
+        previous = self.metrics.turns[-1].node if self.metrics.turns else None
+        transition = bool(self.metrics.turns) and self.node_id != previous
+        return TurnMetrics(stt_provider=p.get("stt"), llm_provider=p.get("llm"), tts_provider=p.get("tts"),
+                           node=self.node_id, transition=transition, **kwargs)
 
     # ------------------------------------------------------------------ transport
     def start(self) -> None:
@@ -104,6 +107,11 @@ class CallReporter:
             self._realtime = isinstance(session.llm, lk_llm.RealtimeModel)
         except Exception:
             self._realtime = False
+        try:
+            from engine.worker.pipeline import model_labels
+            self.metrics.models = model_labels(session)
+        except Exception as e:
+            logger.debug("model labels unavailable: %s", e)
         self._subscribe_availability(session)
 
         @session.on("conversation_item_added")

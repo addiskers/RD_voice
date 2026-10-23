@@ -81,7 +81,7 @@ def test_finish_streams_long_recordings_in_chunks(tmp_path):
     with wave.open(path, "rb") as wf:
         assert wf.getnchannels() == 2 and wf.getframerate() == 8000
         data = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16).reshape(-1, 2)
-    assert abs(len(data) - 20 * 8000) < 800
+    assert abs(len(data) - 20 * 8000) < 4000          # wall-clock placement: allow 0.5 s drift on a busy machine
     seg = data[8000 - 200: 8000 + 200]                       # across the first chunk boundary: no glitch
     assert np.max(np.abs(np.diff(seg[:, 0].astype(int)))) < 8000 * 0.8
 

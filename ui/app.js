@@ -351,7 +351,22 @@
     try {
       const c = await api("/v1/calls/" + id);
       const m = c.metrics || {};
-      const turns = (m.turns || []).map((t) => `<tr><td>${t.turn}</td><td>${fmt(t.eou_delay)}</td><td>${fmt(t.llm_ttft)}</td><td>${fmt(t.tts_ttfb)}</td><td class="${latClass(t.total)}"><b>${fmt(t.total)}</b></td><td><small>${esc(providers(t))}</small></td></tr>`).join("");
+      // stage breakdown per turn: end-of-turn wait, LLM first token, TTS first byte, and whatever is left
+      // (network hops, transition round-trips, audio pipeline). A node change means an extra LLM call.
+      const stageBar = (t) => {
+        const total = t.total || 0; if (!total) return "";
+        const parts = [["eou", t.eou_delay || 0, "#0ea5e9"], ["llm", t.llm_ttft || 0, "#f59e0b"], ["tts", t.tts_ttfb || 0, "#10b981"]];
+        const other = Math.max(0, total - parts.reduce((s, p) => s + p[1], 0));
+        parts.push(["other", other, "#64748b"]);
+        return `<div class="stagebar">${parts.map(([k, v, col]) => `<span title="${k} ${fmt(v)} s" style="width:${(100 * v / total).toFixed(1)}%;background:${col}"></span>`).join("")}</div>`;
+      };
+      const turns = (m.turns || []).map((t) => {
+        const other = t.total != null ? Math.max(0, t.total - (t.eou_delay || 0) - (t.llm_ttft || 0) - (t.tts_ttfb || 0)) : null;
+        return `<tr><td>${t.turn}</td><td><small>${esc(t.node || "")}${t.transition ? ' <span class="badge-lat" title="the workflow moved to a new node before this reply: one extra LLM round-trip">+handoff</span>' : ""}</small></td>
+          <td>${fmt(t.eou_delay)}</td><td>${fmt(t.llm_ttft)}</td><td>${fmt(t.tts_ttfb)}</td><td>${fmt(other)}</td>
+          <td class="${latClass(t.total)}"><b>${fmt(t.total)}</b>${stageBar(t)}</td><td><small>${esc(providers(t))}</small></td></tr>`;
+      }).join("");
+      const models = m.models ? ["stt", "llm", "tts"].map((k) => `${k}: <b>${esc(m.models[k] || "?")}</b>`).join(" · ") : "—";
       const provEvents = (m.provider_events || []).map((e) => `${e.kind}:${e.provider} ${e.available ? "up" : "DOWN"} @${fmt(e.at, 1)}s`).join(", ");
       $("call-detail").innerHTML = `
         <div class="kv"><div>id</div><div>${c.id}</div><div>status</div><div><span class="pill ${c.status}">${c.status}</span> ${esc(c.end_reason || "")} ${esc(c.hangup_cause || "")}</div>
@@ -361,9 +376,11 @@
         <div>outcome</div><div><code>${esc(JSON.stringify(c.outcome || {}))}</code></div>
         <div>recording</div><div>${c.recording_url ? `<a href="#" data-rec="${c.id}">play</a> <span id="rec-holder"></span>` : "none"}</div>
         <div>error</div><div>${esc(c.error || "—")}</div>
+        <div>models</div><div>${models}</div>
         <div>failover</div><div>${esc(provEvents || "none")}</div></div>
-        <h2 style="margin-top:12px">Per-turn metrics (s) · providers stt / llm / tts</h2>
-        <table><thead><tr><th>#</th><th>eou</th><th>llm ttft</th><th>tts ttfb</th><th>total</th><th>providers</th></tr></thead><tbody>${turns || "<tr><td colspan=6><small>none</small></td></tr>"}</tbody></table>
+        <h2 style="margin-top:12px">Per-turn latency (s) · end of caller speech → agent audio</h2>
+        <table><thead><tr><th>#</th><th>node</th><th title="caller stopped speaking → turn committed (VAD / turn detector / Flux)">end of turn</th><th title="LLM time to first token">llm 1st token</th><th title="TTS time to first byte">tts 1st byte</th><th title="total minus the three stages: network hops, handoff round-trips, audio pipeline">other</th><th>total</th><th>served by</th></tr></thead><tbody>${turns || "<tr><td colspan=8><small>none</small></td></tr>"}</tbody></table>
+        <div class="status">bar: <span style="color:#0ea5e9">■</span> end of turn <span style="color:#f59e0b">■</span> llm <span style="color:#10b981">■</span> tts <span style="color:#64748b">■</span> other</div>
         <h2 style="margin-top:12px">Transcript</h2>
         <div class="transcript" style="height:260px">${(c.transcript || []).map((t) => `<div class="bubble ${t.role === "user" ? "user" : t.role === "agent" ? "agent" : "sys"}">${esc(t.text)}${t.interrupted ? " ⏸" : ""}</div>`).join("") || "<small>empty</small>"}</div>`;
       bindRecordingLinks($("call-detail"));
