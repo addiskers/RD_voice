@@ -64,8 +64,16 @@ class WorkerLifecycle:
         self._drain_started_at: Optional[float] = None
 
     # ------------------------------------------------------------------ admission
+    def reserve(self) -> None:
+        """A stream was admitted but its session is not in the active table yet (runtime lookup, session
+        build): hold its slot so a burst of streams cannot all pass the capacity check at once."""
+        self.reserved = getattr(self, "reserved", 0) + 1
+
+    def release(self) -> None:
+        self.reserved = max(0, getattr(self, "reserved", 0) - 1)
+
     def should_refuse(self, active: int) -> Optional[str]:
-        if active >= self.settings.worker_max_sessions:
+        if active + getattr(self, "reserved", 0) >= self.settings.worker_max_sessions:
             return "capacity"
         if self.draining:
             # the proxy only notices the 503 on its next health check; refusing before that fails calls the

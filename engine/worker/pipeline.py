@@ -55,6 +55,29 @@ def is_flux(ref: ProviderRef, settings: Settings) -> bool:
 
 _PROVIDER_ALIASES = {"gemini": "google", "eleven": "elevenlabs"}
 LLM_ATTEMPT_TIMEOUT_S = 15.0        # per-attempt deadline inside the LLM FallbackAdapter (Gemini needs >= 10 s)
+TTS_ATTEMPT_TIMEOUT_S = 3.0         # a voice that has produced nothing in 3 s is dead for a phone call (LiveKit: 10 s)
+
+
+def _fast_failover_adapter(instances: list[Any]):
+    """LiveKit's TTS FallbackAdapter with a 3 s per-attempt deadline and no retries on the failing vendor.
+    Measured 2026-10-23: with the primary refusing every connection (402/429) the stock adapter still waited
+    its 10 s default before switching, so every call opened with 10 s of silence."""
+    import dataclasses
+
+    from livekit.agents import tts as lk_tts
+    from livekit.agents.tts.fallback_adapter import DEFAULT_FALLBACK_API_CONNECT_OPTIONS
+
+    def _cap(conn_options):
+        return dataclasses.replace(conn_options, timeout=min(conn_options.timeout, TTS_ATTEMPT_TIMEOUT_S))
+
+    class FastFailoverTTS(lk_tts.FallbackAdapter):
+        def synthesize(self, text: str, *, conn_options=DEFAULT_FALLBACK_API_CONNECT_OPTIONS):
+            return super().synthesize(text, conn_options=_cap(conn_options))
+
+        def stream(self, *, conn_options=DEFAULT_FALLBACK_API_CONNECT_OPTIONS):
+            return super().stream(conn_options=_cap(conn_options))
+
+    return FastFailoverTTS(instances, max_retry_per_tts=0)
 
 
 def provider_id(component: Any) -> str:
@@ -71,6 +94,27 @@ def provider_id(component: Any) -> str:
         mod = type(component).__module__.split(".")
         name = mod[2] if len(mod) > 2 and mod[:2] == ["livekit", "plugins"] else type(component).__name__.lower()
     return _PROVIDER_ALIASES.get(name, name)
+
+
+_SARVAM_LANGS = ("bn-IN", "en-IN", "gu-IN", "hi-IN", "kn-IN", "ml-IN", "mr-IN", "od-IN", "pa-IN", "ta-IN", "te-IN")
+
+
+def sarvam_language(code: Optional[str], *, default: str = "en-IN") -> str:
+    """Sarvam accepts only regionalised Indian codes ("en-IN", "hi-IN", ...). A bare code such as the "en" a
+    Cartesia agent is configured with (and inherits when Sarvam is the fallback voice) is regionalised; anything
+    Sarvam does not support falls back to ``default``."""
+    c = (code or "").strip().replace("_", "-")
+    if not c:
+        return default
+    if c in _SARVAM_LANGS:
+        return c
+    base = c.split("-")[0].lower()
+    if base == "or":
+        base = "od"
+    for lang in _SARVAM_LANGS:
+        if lang.split("-")[0] == base:
+            return lang
+    return default
 
 
 def unwrap_stt(obj: Any) -> Any:
@@ -218,16 +262,31 @@ def build_tts(ref: VoiceRef, settings: Settings, language: str):
     a vendor outage (e.g. Sarvam 402 "credits exhausted", seen 2026-09-08) then switches voices instead of
     leaving the call silent."""
     primary = _build_tts_single(ref, settings, language)
-    fb = (getattr(settings, "tts_fallback_provider", "cartesia") or "").lower()
-    if not fb or fb == ref.provider.lower() or not settings.provider_key(fb):
+    fb = tts_fallback_vendor(ref.provider, settings)
+    if not fb:
         return primary
     try:
         fallback = _build_tts_single(VoiceRef(provider=fb, language=ref.language or None), settings, language)
-        from livekit.agents import tts as lk_tts
-        return lk_tts.FallbackAdapter([primary, fallback])
+        # switch on the first failed request, within 3 s: on a phone call silence is worse than a voice change,
+        # and a vendor concurrency cap (Cartesia: 2 parallel streams on a starter plan, measured 2026-10-23)
+        # fails every request until load drops, so retries only add seconds. The adapter keeps probing the
+        # primary in the background and moves back when it recovers.
+        return _fast_failover_adapter([primary, fallback])
     except Exception as e:
         logger.warning("TTS fallback '%s' unavailable: %s", fb, e)
         return primary
+
+
+def tts_fallback_vendor(primary: str, settings: Settings) -> str:
+    """The second voice vendor: the configured one, or, when it is the primary itself (the default
+    'cartesia' for a cartesia agent, which is no fallback at all), the other keyed Indian-capable vendor."""
+    primary = (primary or "").lower()
+    fb = (getattr(settings, "tts_fallback_provider", "") or "").lower()
+    if fb == primary:
+        fb = next((v for v in ("sarvam", "cartesia", "elevenlabs") if v != primary and settings.provider_key(v)), "")
+    if not fb or fb == primary or not settings.provider_key(fb):
+        return ""
+    return fb
 
 
 def _build_tts_single(ref: VoiceRef, settings: Settings, language: str):
@@ -245,7 +304,8 @@ def _build_tts_single(ref: VoiceRef, settings: Settings, language: str):
     if p == "sarvam":
         from livekit.plugins import sarvam
         return _construct(sarvam.TTS,
-                          target_language_code=ref.language or opts.pop("target_language_code", settings.sarvam_tts_language),
+                          target_language_code=sarvam_language(ref.language or opts.pop("target_language_code", None),
+                                                               default=settings.sarvam_tts_language),
                           speaker=ref.voice or settings.sarvam_tts_speaker or None,
                           model=ref.model or settings.sarvam_tts_model, pace=ref.speed,
                           api_key=_key(ref, settings), **opts)

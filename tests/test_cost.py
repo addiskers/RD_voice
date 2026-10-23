@@ -1,8 +1,10 @@
 """Per-call cost breakdown: list prices x measured quantities, per stage and per vendor/model."""
 
+import json
+
 import pytest
 
-from engine.pricing import PriceList, estimate_cost, load_default_prices
+from engine.pricing import PriceList, estimate_cost, load_default_prices, load_prices
 
 
 def test_default_price_list_has_sources_and_dates():
@@ -85,3 +87,31 @@ def test_price_list_ships_inside_the_installed_package():
     from pathlib import Path
     pyproject = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
     assert "pricing.json" in pyproject["tool"]["setuptools"]["package-data"]["engine"]
+
+
+def test_price_list_is_validated_at_load(tmp_path):
+    bad = {"as_of": "2026-10-23", "usd_inr": 84, "models": {"google/x": {"stage": "llm", "unit": "token", "usd_per_m_input": 1}}}
+    p = tmp_path / "p.json"
+    p.write_text(json.dumps(bad), encoding="utf-8")
+    with pytest.raises(ValueError, match="google/x"):
+        load_prices(str(p))
+    p.write_text(json.dumps({"as_of": "2026-10-23", "usd_inr": 0, "models": {}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="usd_inr"):
+        load_prices(str(p))
+
+
+def test_inr_totals_are_the_sum_of_the_displayed_lines():
+    pl = PriceList(as_of="x", usd_inr=84.0, models={"cartesia/sonic-3": {"stage": "tts", "unit": "character",
+                                                                           "usd_per_unit": 0.000038, "source": "x"}})
+    usage = {"tts": [{"provider": "cartesia", "model": "sonic-3", "characters": 1} for _ in range(7)]}
+    out = estimate_cost(usage, pl)
+    lines = out["stages"]["tts"]["lines"]
+    assert out["stages"]["tts"]["inr"] == pytest.approx(sum(line["inr"] for line in lines))
+    assert out["total_inr"] == pytest.approx(sum(s["inr"] for s in out["stages"].values()))
+
+
+def test_empty_usage_still_prices_the_carrier_leg():
+    pl = PriceList(as_of="x", usd_inr=84.0, models={}, carrier_inr_per_minute={"plivo": 0.38})
+    out = estimate_cost({"carrier": {"provider": "plivo", "seconds": 12.0}}, pl)
+    assert out["stages"]["carrier"]["lines"][0]["inr"] == pytest.approx(0.19)
+    assert out["incomplete"] is False and out["models_usd"] == 0

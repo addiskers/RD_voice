@@ -89,3 +89,17 @@ async def test_heartbeat_posts_expected_body():
     assert body["max_sessions"] == 7 and body["active_sessions"] == 3 and body["spool_pending"] == 2
     assert body["draining"] is False and body["started_at"]
     assert len(seen) >= 2
+
+
+def test_should_refuse_counts_streams_admitted_but_not_yet_running():
+    # 22 carrier streams arrived within one second on a 20-session worker and all were accepted, because a
+    # call only counts as active once its session is built (seconds later). A reservation taken at
+    # admission closes that window.
+    lc = _lc(_s(worker_max_sessions=2))
+    assert lc.should_refuse(0) is None
+    lc.reserve()
+    assert lc.should_refuse(0) is None
+    lc.reserve()
+    assert lc.should_refuse(0) == "capacity"
+    lc.release()                      # the session is now in the active table (or the stream was dropped)
+    assert lc.should_refuse(1) == "capacity" and lc.should_refuse(0) is None

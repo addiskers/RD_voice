@@ -514,18 +514,29 @@ class EngineService:
             if data.get("transcript") is not None:
                 call.transcript = data["transcript"]
             if data.get("metrics") is not None:
-                call.metrics = data["metrics"]
+                # the worker's final snapshot carries no provider events: keep the ones posted during the call
+                events = list((call.metrics or {}).get("provider_events") or [])
+                incoming = dict(data["metrics"])
+                if events and not incoming.get("provider_events"):
+                    incoming["provider_events"] = events
+                call.metrics = incoming
             if data.get("outcome"):
                 outcome = dict(call.outcome or {})
                 outcome.update(data["outcome"])
                 call.outcome = outcome
             call.recording_path = data.get("recording_path") or call.recording_path
-            if data.get("usage_detail"):
+            if "usage_detail" in data:       # {} is still a call: the carrier billed it even if no model answered
                 metrics = dict(call.metrics or {})
-                metrics["usage_detail"] = data["usage_detail"]
-                metrics["cost"] = self.cost_for(call, data["usage_detail"], duration_s=data.get("duration_s"))
+                metrics["usage_detail"] = data["usage_detail"] or {}
+                try:
+                    metrics["cost"] = self.cost_for(call, metrics["usage_detail"], duration_s=data.get("duration_s"))
+                    call.cost_usd = metrics["cost"]["total_usd"]
+                except Exception as e:      # a bad PRICING_FILE must never block finalization
+                    logger.warning("cost estimate failed for %s: %s", call.id, e)
+                    metrics["cost"] = {"stages": {}, "total_usd": None, "total_inr": None, "models_usd": None,
+                                       "incomplete": True, "notes": [f"pricing error: {e}"],
+                                       "as_of": self.prices.as_of, "usd_inr": self.prices.usd_inr}
                 call.metrics = metrics
-                call.cost_usd = metrics["cost"]["total_usd"]
             else:
                 call.cost_usd = data.get("cost_usd", call.cost_usd)
             await db.commit()   # keep the worker's transcript/metrics even when the call is already terminal

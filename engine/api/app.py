@@ -345,7 +345,7 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
         """The per-stage cost estimate recomputed with the current price list (the record keeps the one
         computed when the call ended)."""
         call = await load_call(call_id, db)
-        if not (call.metrics or {}).get("usage_detail"):
+        if "usage_detail" not in (call.metrics or {}):     # {} is a call with no model usage, still priced (carrier)
             raise HTTPException(404, "no usage recorded for this call (it has not ended, or ran on an older worker)")
         return state.service.cost_for(call)
 

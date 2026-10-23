@@ -111,6 +111,8 @@ def example_agent(mode: str = "cascaded") -> tuple[dict[str, Any], dict[str, Any
 # ----------------------------------------------------------------------------- one call
 async def run_call(args, idx: int, utterances: list[list[bytes]], http: httpx.AsyncClient) -> dict[str, Any]:
     H = {"Authorization": f"Bearer {args.key}"}
+    if args.ramp and idx > 1:
+        await asyncio.sleep(args.ramp * (idx - 1))     # paced dialing, as a campaign throttled by CPS would do
     res: dict[str, Any] = {"index": idx, "ok": False, "events": [], "client_latency_s": [], "dropped": False}
     agent, variables = example_agent(args.mode) if args.agent == "example" else ({
         "name": "smoke", "mode": "cascaded", "language": "en-IN", "max_duration_s": 120,
@@ -301,6 +303,8 @@ def main() -> int:
     ap.add_argument("--internal-token", default=os.environ.get("INTERNAL_TOKEN", "dev-internal-token"))
     ap.add_argument("--worker-ws", default=os.environ.get("WORKER_MEDIA_URL", "ws://127.0.0.1:8090"))
     ap.add_argument("--calls", type=int, default=1)
+    ap.add_argument("--ramp", type=float, default=0.0,
+                    help="seconds between call starts (0 = all at once; real campaigns are paced by CARRIER_CPS)")
     ap.add_argument("--minutes", type=float, default=0.0, help="load mode: keep each call going this long")
     ap.add_argument("--script", default="yes", help="comma-separated utterances: yes,no,nokids or WAV paths")
     ap.add_argument("--agent", default="example", choices=["example", "prompt"])

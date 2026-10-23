@@ -31,21 +31,41 @@ class PriceList:
         key = f"{(provider or '').lower()}/{model or ''}"
         if key in self.models:
             return self.models[key]
-        # tolerate a provider alias or a versioned model name ("bulbul:v3" vs "bulbul:v3-beta")
-        for k, v in self.models.items():
+        for k, v in self.models.items():      # case-insensitive match ("Gemini-2.5-Flash")
             if k.lower() == key.lower():
                 return v
         return None
+
+
+_REQUIRED = {"stt": (("usd_per_unit", "inr_per_unit"),), "tts": (("usd_per_unit", "inr_per_unit"),),
+             "llm": (("usd_per_m_input",), ("usd_per_m_output",)),
+             "realtime": (("usd_per_m_audio_input",), ("usd_per_m_audio_output",), ("usd_per_m_text_input",),
+                          ("usd_per_m_text_output",))}
+
+
+def validate_prices(pl: PriceList) -> None:
+    """Fail at startup, with the offending key named, rather than at the first hangup."""
+    if not pl.usd_inr or pl.usd_inr <= 0:
+        raise ValueError(f"pricing: usd_inr must be > 0 (got {pl.usd_inr!r}) in {pl.path}")
+    for key, price in pl.models.items():
+        stage = price.get("stage")
+        if stage not in _REQUIRED:
+            raise ValueError(f"pricing: model {key!r} has unknown stage {stage!r} (expected one of {sorted(_REQUIRED)})")
+        for alternatives in _REQUIRED[stage]:
+            if not any(a in price for a in alternatives):
+                raise ValueError(f"pricing: model {key!r} ({stage}) is missing {' or '.join(alternatives)}")
 
 
 def load_prices(path: str | None = None, usd_inr: float | None = None) -> PriceList:
     p = path or DEFAULT_PRICING_FILE
     with open(p, encoding="utf-8") as f:
         raw = json.load(f)
-    return PriceList(as_of=str(raw.get("as_of", "")), usd_inr=float(usd_inr or raw.get("usd_inr", 84.0)),
-                     models=dict(raw.get("models") or {}),
-                     carrier_inr_per_minute={k: float(v) for k, v in (raw.get("carrier_inr_per_minute") or {}).items()},
-                     note=str(raw.get("note", "")), path=p)
+    pl = PriceList(as_of=str(raw.get("as_of", "")), usd_inr=float(usd_inr or raw.get("usd_inr") or 0.0),
+                   models=dict(raw.get("models") or {}),
+                   carrier_inr_per_minute={k: float(v) for k, v in (raw.get("carrier_inr_per_minute") or {}).items()},
+                   note=str(raw.get("note", "")), path=p)
+    validate_prices(pl)
+    return pl
 
 
 def load_default_prices() -> PriceList:
@@ -79,6 +99,7 @@ def estimate_cost(usage: dict[str, Any], pl: PriceList) -> dict[str, Any]:
     notes: list[str] = []
 
     def add(stage: str, line: dict[str, Any]) -> None:
+        # stage and call totals are sums of the displayed (rounded) lines, so the table always adds up
         stages.setdefault(stage, {"lines": [], "usd": 0.0, "inr": 0.0})
         stages[stage]["lines"].append(line)
         if line["usd"] is not None:
@@ -91,7 +112,7 @@ def estimate_cost(usage: dict[str, Any], pl: PriceList) -> dict[str, Any]:
         if price and price.get("stage") == "stt":
             rate = _per_unit_usd(price, pl)
             add("stt", _line(u["provider"], u["model"], minutes, "minute", minutes * rate, pl, unit_price_usd=rate,
-                             detail={"seconds_streamed": u.get("seconds"), "recognized_seconds": u.get("recognized_seconds")},
+                             detail={"seconds_streamed": u.get("seconds"), "reported_seconds": u.get("reported_seconds")},
                              note=price.get("billing", ""), source=price.get("source", "")))
         else:
             incomplete = True
@@ -165,8 +186,9 @@ def estimate_cost(usage: dict[str, Any], pl: PriceList) -> dict[str, Any]:
             notes.append(f"carrier '{provider}' has no rate in pricing.json; carrier cost not included")
 
     total_usd = round(sum(s["usd"] for s in stages.values()), 6)
+    total_inr = round(sum(s["inr"] for s in stages.values()), 4)
     return {"as_of": pl.as_of, "price_list": os.path.basename(pl.path or DEFAULT_PRICING_FILE), "usd_inr": pl.usd_inr,
-            "stages": stages, "total_usd": total_usd, "total_inr": round(total_usd * pl.usd_inr, 4),
+            "stages": stages, "total_usd": total_usd, "total_inr": total_inr,
             "models_usd": round(sum(s["usd"] for k, s in stages.items() if k != "carrier"), 6),
             "incomplete": incomplete, "notes": notes,
             "disclaimer": "estimate: measured quantities x public list prices on " + pl.as_of}

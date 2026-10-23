@@ -171,6 +171,8 @@ async def run_call(runtime: dict[str, Any], *, session_factory, attach_io, hangu
             from engine.worker.pipeline import build_llm
             rt.extraction_llm = build_llm(ProviderRef(provider=settings.default_llm_provider,
                                                       model=settings.default_llm_model), settings)
+            # it is called directly (not through the session), so its tokens must be billed by hand
+            rt.extraction_llm.on("metrics_collected", reporter.record_usage)
         except Exception as e:
             logger.warning("extraction LLM unavailable for S2S: %s", e)
 
@@ -264,6 +266,7 @@ async def finalize(handle: CallHandle, reason: str) -> None:
         return
     handle.finalized = True
     W.active.pop(handle.call_id, None)
+    media_seconds = handle.reporter.at()      # billed duration: the recording upload and extraction below are not call time
     for t in handle.tasks:
         if not t.done() and t is not asyncio.current_task() and t.get_name() != "gvox-end":
             t.cancel()
@@ -278,7 +281,8 @@ async def finalize(handle: CallHandle, reason: str) -> None:
             logger.warning("post-call extraction failed for %s: %s", handle.call_id, e)
     handle.reporter.ended(reason, recording_path=recording_path, outcome=handle.state.outcome,
                           hangup_carrier=reason in AGENT_END_REASONS,
-                          error=("; ".join(handle.reporter.errors) if handle.reporter.errors else None))
+                          error=("; ".join(handle.reporter.errors) if handle.reporter.errors else None),
+                          duration_s=media_seconds)
     await handle.reporter.close()
     logger.info("call %s finalized (%s) after %.1fs, %d transcript turns", handle.call_id, reason,
                 handle.reporter.at(), len(handle.reporter.transcript))
@@ -346,6 +350,13 @@ def build_server():
             await report_refusal(call_id, ctx.plivo_call_uuid, refuse)
             ctx.endpoint.hangup(ctx.session_id)
             return
+        W.lifecycle.reserve()           # released by _admit below once the call is in W.active (or dropped)
+        try:
+            await _admit(ctx, call_id, headers, settings)
+        finally:
+            W.lifecycle.release()
+
+    async def _admit(ctx: JobContext, call_id: Optional[str], headers: dict[str, str], settings: Settings) -> None:
         runtime = await fetch_runtime(call_id, ctx.plivo_call_uuid)
         if runtime is None:
             logger.error("no engine call for stream (call_id=%s, provider uuid=%s); hanging up", call_id,

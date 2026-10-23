@@ -352,7 +352,7 @@
   function costQuantity(l) {
     const d = l.detail || {};
     if (l.unit === "minute" && d.billed_pulses_30s != null) return `${l.quantity.toFixed(1)} min <small>(${fmt(d.seconds, 0)} s → ${d.billed_pulses_30s} × 30 s pulses)</small>`;
-    if (l.unit === "minute") return `${l.quantity.toFixed(3)} min <small>(${fmt(d.seconds_streamed, 1)} s streamed, ${fmt(d.recognized_seconds, 1)} s of speech)</small>`;
+    if (l.unit === "minute") return `${l.quantity.toFixed(3)} min <small>(${fmt(d.seconds_streamed, 1)} s streamed, ${fmt(d.reported_seconds, 1)} s reported by the STT plugin)</small>`;
     if (l.unit === "character") return `${d.characters != null ? d.characters : l.quantity} chars <small>(${d.requests || 0} req${d.cancelled_characters ? `, ${d.cancelled_characters} cancelled` : ""}${d.audio_seconds ? `, ${fmt(d.audio_seconds, 1)} s audio` : ""})</small>`;
     if (d.audio_input_tokens != null) return `<small>audio ${d.audio_input_tokens} in / ${d.audio_output_tokens} out · text ${d.text_input_tokens} in / ${d.text_output_tokens} out</small>`;
     return `<small>${d.uncached_input_tokens || 0} in${d.cached_input_tokens ? ` + ${d.cached_input_tokens} cached` : ""} + ${d.output_tokens || 0} out${d.thinking_tokens ? ` (${d.thinking_tokens} thinking)` : ""} · ${d.requests || 0} req</small>`;

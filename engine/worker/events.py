@@ -50,9 +50,17 @@ class CallReporter:
     def _usage_key(self, kind: str, m: Any) -> tuple[str, str, str]:
         from engine.worker.pipeline import provider_id
         label = str(getattr(m, "label", "") or "")
-        provider = self.current_providers.get(kind) or provider_id(type("L", (), {"label": label})())
+        # LiveKit stamps each metric with the instance that served it, FallbackAdapter included: after a
+        # failover the request belongs to the fallback vendor, not the one the agent is configured with
+        meta = getattr(m, "metadata", None)
+        served = str(getattr(meta, "model_provider", "") or "")
+        provider = provider_id(type("L", (), {"label": served})()) if served else ""
+        if provider:
+            self.current_providers[kind] = provider        # "last served" also labels the following turns
+        else:
+            provider = self.current_providers.get(kind) or provider_id(type("L", (), {"label": label})())
         configured = (self.metrics.models.get(kind) or "").split(" ", 1)
-        model = str(getattr(m, "model", "") or "")
+        model = str(getattr(meta, "model_name", "") or getattr(m, "model", "") or "")
         if not model and len(configured) == 2 and configured[0] == provider:
             model = configured[1]
         if not model and len(configured) == 2:
@@ -89,8 +97,9 @@ class CallReporter:
                 u["audio_seconds"] = round(u["audio_seconds"] + float(getattr(m, "audio_duration", 0.0) or 0.0), 3)
         elif mtype == "stt_metrics":
             key = self._usage_key("stt", m)
-            u = self._usage.setdefault(key, {"recognized_seconds": 0.0})
-            u["recognized_seconds"] = round(u["recognized_seconds"] + float(getattr(m, "audio_duration", 0.0) or 0.0), 3)
+            u = self._usage.setdefault(key, {"reported_seconds": 0.0})
+            # what the plugin has reported so far (Deepgram: pushed audio in 5 s batches, silence included)
+            u["reported_seconds"] = round(u["reported_seconds"] + float(getattr(m, "audio_duration", 0.0) or 0.0), 3)
         elif mtype == "realtime_model_metrics":
             key = self._usage_key("llm", m)
             key = ("realtime", key[1], key[2])
@@ -106,20 +115,32 @@ class CallReporter:
 
     def usage_detail(self, call_seconds: Optional[float] = None) -> dict[str, list[dict[str, Any]]]:
         """Billable quantities per stage. STT is billed on the audio streamed for the whole call (silence
-        included), so its seconds are the call duration when known, with the recognized seconds alongside."""
+        included): the primary vendor gets the call duration minus whatever a fallback vendor streamed, the
+        fallback gets the seconds it reported, so the lines add up to the call and nothing is billed twice."""
         out: dict[str, list[dict[str, Any]]] = {}
-        seen_stt = False
+        stt_lines = [(provider, model, u) for (kind, provider, model), u in self._usage.items() if kind == "stt"]
         for (kind, provider, model), u in self._usage.items():
-            entry = {"provider": provider, "model": model, **u}
-            if kind == "stt":
-                seen_stt = True
-                entry = {"provider": provider, "model": model,
-                         "seconds": round(call_seconds if call_seconds is not None else u["recognized_seconds"], 3),
-                         "recognized_seconds": u["recognized_seconds"]}
-            out.setdefault(kind, []).append(entry)
-        if not seen_stt and call_seconds is not None and not self._realtime and self.metrics.models.get("stt"):
+            if kind != "stt":
+                out.setdefault(kind, []).append({"provider": provider, "model": model, **u})
+        if stt_lines:
+            configured = (self.metrics.models.get("stt") or "").partition(" ")[0]
+            primary = next((line for line in stt_lines if line[0] == configured), stt_lines[0])
+            others = [line for line in stt_lines if line is not primary]
+            lines = []
+            for line in stt_lines:
+                provider, model, u = line
+                if call_seconds is None:
+                    seconds = u["reported_seconds"]
+                elif line is primary:
+                    seconds = max(0.0, call_seconds - sum(o[2]["reported_seconds"] for o in others))
+                else:
+                    seconds = min(u["reported_seconds"], call_seconds)
+                lines.append({"provider": provider, "model": model, "seconds": round(seconds, 3),
+                              "reported_seconds": u["reported_seconds"]})
+            out["stt"] = lines
+        elif call_seconds is not None and not self._realtime and self.metrics.models.get("stt"):
             provider, _, model = self.metrics.models["stt"].partition(" ")
-            out["stt"] = [{"provider": provider, "model": model, "seconds": round(call_seconds, 3), "recognized_seconds": 0.0}]
+            out["stt"] = [{"provider": provider, "model": model, "seconds": round(call_seconds, 3), "reported_seconds": 0.0}]
         return out
 
     def _new_turn(self, **kwargs: Any) -> TurnMetrics:
@@ -227,7 +248,7 @@ class CallReporter:
             try:
                 self.record_usage(m)
             except Exception as e:
-                logger.debug("usage accounting error: %s", e)
+                logger.warning("usage accounting dropped a %s event on %s: %s", mtype, self.call_id, e)
             try:
                 if mtype == "eou_metrics":
                     self._turn_index += 1
@@ -343,9 +364,11 @@ class CallReporter:
         self.post("started", {"worker_url": self.worker_url, "worker_id": self.worker_id, "at": self.at()})
 
     def ended(self, reason: str, *, recording_path: Optional[str] = None, outcome: Optional[dict[str, Any]] = None,
-              hangup_carrier: bool = False, error: Optional[str] = None) -> None:
+              hangup_carrier: bool = False, error: Optional[str] = None, duration_s: Optional[float] = None) -> None:
+        """``duration_s`` is the media duration measured when the session closed: recording upload and post-call
+        extraction happen after that and must not be billed as call time."""
         snap = self.snapshot()
-        duration = self.at()
+        duration = self.at() if duration_s is None else round(float(duration_s), 3)
         self.post("ended", {"reason": reason, "duration_s": duration, "recording_path": recording_path,
                             "outcome": outcome or {}, "hangup_carrier": hangup_carrier, "error": error,
                             "errors": self.errors, "usage_detail": self.usage_detail(call_seconds=duration), **snap})

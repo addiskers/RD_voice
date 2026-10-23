@@ -10,24 +10,153 @@
   },
   "carrier_note": "Plivo India voice ₹0.38/min with audio streaming included, 30-second billing pulse (plivo.com/voice/pricing/in). Vobiz ₹0.65/min for WebSocket streaming per its own comparison page. Set to your contracted rates.",
   "models": {
-    "deepgram/flux-general-multi": {"stage": "stt", "unit": "minute", "usd_per_unit": 0.0078, "billing": "true per-second billing on audio streamed, silence included", "source": "https://deepgram.com/pricing (Flux Multilingual streaming, pay-as-you-go)"},
-    "deepgram/flux-general-en": {"stage": "stt", "unit": "minute", "usd_per_unit": 0.0077, "billing": "regular rate; $0.0065 promotional on the page", "source": "https://deepgram.com/pricing"},
-    "deepgram/nova-3": {"stage": "stt", "unit": "minute", "usd_per_unit": 0.0058, "billing": "multilingual streaming rate (monolingual is $0.0048); true per-second billing", "source": "https://deepgram.com/pricing"},
-    "deepgram/aura-2-thalia-en": {"stage": "tts", "unit": "character", "usd_per_unit": 0.00003, "billing": "$0.030 per 1k characters", "source": "https://deepgram.com/pricing"},
-    "sarvam/saaras:v4": {"stage": "stt", "unit": "minute", "inr_per_unit": 0.49, "billing": "real-time and batch, per minute", "source": "https://www.sarvam.ai/api-pricing"},
-    "sarvam/saaras:v3": {"stage": "stt", "unit": "minute", "inr_per_unit": 0.49, "source": "https://www.sarvam.ai/api-pricing"},
-    "sarvam/saarika:v2.5": {"stage": "stt", "unit": "minute", "inr_per_unit": 0.49, "source": "https://www.sarvam.ai/api-pricing"},
-    "sarvam/bulbul:v3": {"stage": "tts", "unit": "character", "inr_per_unit": 0.003, "billing": "₹3.00 per 1,000 characters (streaming and WebSocket included)", "source": "https://www.sarvam.ai/api-pricing"},
-    "sarvam/bulbul:v4-flash": {"stage": "tts", "unit": "character", "inr_per_unit": 0.002, "billing": "₹2.00 per 1,000 characters", "source": "https://www.sarvam.ai/api-pricing"},
-    "google/gemini-2.5-flash-lite": {"stage": "llm", "unit": "token", "usd_per_m_input": 0.10, "usd_per_m_cached_input": 0.01, "usd_per_m_output": 0.40, "billing": "text input (audio input is $0.30/M); thinking tokens billed as output, counted from the total", "source": "https://ai.google.dev/gemini-api/docs/pricing"},
-    "google/gemini-2.5-flash": {"stage": "llm", "unit": "token", "usd_per_m_input": 0.30, "usd_per_m_cached_input": 0.03, "usd_per_m_output": 2.50, "billing": "thinking tokens are billed as output (counted here from the total)", "source": "https://ai.google.dev/gemini-api/docs/pricing"},
-    "google/gemini-2.5-flash-native-audio-preview-12-2025": {"stage": "realtime", "unit": "token", "usd_per_m_audio_input": 3.0, "usd_per_m_audio_output": 12.0, "usd_per_m_text_input": 0.5, "usd_per_m_text_output": 2.0, "billing": "Live API native audio; audio is about 25 tokens per second", "source": "https://ai.google.dev/gemini-api/docs/pricing"},
-    "google/gemini-3.1-flash-live-preview": {"stage": "realtime", "unit": "token", "usd_per_m_audio_input": 3.0, "usd_per_m_audio_output": 12.0, "usd_per_m_text_input": 0.5, "usd_per_m_text_output": 2.0, "billing": "assumed same as the 2.5 native-audio Live rate; verify on the pricing page", "source": "https://ai.google.dev/gemini-api/docs/pricing", "verify": true},
-    "groq/openai/gpt-oss-20b": {"stage": "llm", "unit": "token", "usd_per_m_input": 0.075, "usd_per_m_cached_input": 0.075, "usd_per_m_output": 0.30, "source": "https://console.groq.com/docs/models"},
-    "groq/openai/gpt-oss-120b": {"stage": "llm", "unit": "token", "usd_per_m_input": 0.15, "usd_per_m_cached_input": 0.15, "usd_per_m_output": 0.60, "source": "https://console.groq.com/docs/models"},
-    "cartesia/sonic-3": {"stage": "tts", "unit": "character", "usd_per_unit": 0.000038, "billing": "1 credit = 1 character; $38 per 1M credits is the Scale-plan overage rate (Startup $45, Pro $65); plan allowances are prepaid", "source": "https://cartesia.ai/pricing"},
-    "cartesia/sonic-2": {"stage": "tts", "unit": "character", "usd_per_unit": 0.000038, "source": "https://cartesia.ai/pricing"},
-    "elevenlabs/eleven_flash_v2_5": {"stage": "tts", "unit": "character", "usd_per_unit": 0.00004, "billing": "$0.04 per 1k characters (Flash/Turbo); plan allowances are prepaid", "source": "https://elevenlabs.io/pricing/api"},
-    "elevenlabs/eleven_multilingual_v2": {"stage": "tts", "unit": "character", "usd_per_unit": 0.00008, "source": "https://elevenlabs.io/pricing/api"}
-  }
+    "deepgram/flux-general-multi": {
+      "stage": "stt",
+      "unit": "minute",
+      "usd_per_unit": 0.0078,
+      "billing": "true per-second billing on audio streamed, silence included",
+      "source": "https://deepgram.com/pricing (Flux Multilingual streaming, pay-as-you-go)"
+    },
+    "deepgram/flux-general-en": {
+      "stage": "stt",
+      "unit": "minute",
+      "usd_per_unit": 0.0077,
+      "billing": "regular rate; $0.0065 promotional on the page",
+      "source": "https://deepgram.com/pricing"
+    },
+    "deepgram/nova-3": {
+      "stage": "stt",
+      "unit": "minute",
+      "usd_per_unit": 0.0058,
+      "billing": "multilingual streaming rate; a single-language deployment is billed $0.0048/min: edit this entry",
+      "source": "https://deepgram.com/pricing"
+    },
+    "deepgram/aura-2-thalia-en": {
+      "stage": "tts",
+      "unit": "character",
+      "usd_per_unit": 3e-05,
+      "billing": "$0.030 per 1k characters",
+      "source": "https://deepgram.com/pricing"
+    },
+    "sarvam/saaras:v4": {
+      "stage": "stt",
+      "unit": "minute",
+      "inr_per_unit": 0.49,
+      "billing": "real-time and batch, per minute",
+      "source": "https://www.sarvam.ai/api-pricing"
+    },
+    "sarvam/saaras:v3": {
+      "stage": "stt",
+      "unit": "minute",
+      "inr_per_unit": 0.49,
+      "source": "https://www.sarvam.ai/api-pricing"
+    },
+    "sarvam/saarika:v2.5": {
+      "stage": "stt",
+      "unit": "minute",
+      "inr_per_unit": 0.49,
+      "source": "https://www.sarvam.ai/api-pricing"
+    },
+    "sarvam/bulbul:v3": {
+      "stage": "tts",
+      "unit": "character",
+      "inr_per_unit": 0.003,
+      "billing": "₹3.00 per 1,000 characters (streaming and WebSocket included)",
+      "source": "https://www.sarvam.ai/api-pricing"
+    },
+    "sarvam/bulbul:v4-flash": {
+      "stage": "tts",
+      "unit": "character",
+      "inr_per_unit": 0.002,
+      "billing": "₹2.00 per 1,000 characters",
+      "source": "https://www.sarvam.ai/api-pricing"
+    },
+    "google/gemini-2.5-flash-lite": {
+      "stage": "llm",
+      "unit": "token",
+      "usd_per_m_input": 0.1,
+      "usd_per_m_cached_input": 0.01,
+      "usd_per_m_output": 0.4,
+      "billing": "text input (audio input is $0.30/M); thinking tokens billed as output, counted from the total",
+      "source": "https://ai.google.dev/gemini-api/docs/pricing"
+    },
+    "google/gemini-2.5-flash": {
+      "stage": "llm",
+      "unit": "token",
+      "usd_per_m_input": 0.3,
+      "usd_per_m_cached_input": 0.03,
+      "usd_per_m_output": 2.5,
+      "billing": "thinking tokens are billed as output (counted here from the total)",
+      "source": "https://ai.google.dev/gemini-api/docs/pricing"
+    },
+    "google/gemini-2.5-flash-native-audio-preview-12-2025": {
+      "stage": "realtime",
+      "unit": "token",
+      "usd_per_m_audio_input": 3.0,
+      "usd_per_m_audio_output": 12.0,
+      "usd_per_m_text_input": 0.5,
+      "usd_per_m_text_output": 2.0,
+      "billing": "Live API native audio; audio is about 25 tokens per second",
+      "source": "https://ai.google.dev/gemini-api/docs/pricing"
+    },
+    "google/gemini-3.1-flash-live-preview": {
+      "stage": "realtime",
+      "unit": "token",
+      "usd_per_m_audio_input": 3.0,
+      "usd_per_m_audio_output": 12.0,
+      "usd_per_m_text_input": 0.75,
+      "usd_per_m_text_output": 4.5,
+      "billing": "Gemini 3.x Live row: text $0.75/M in, $4.50/M out; audio $3.00/M in, $12.00/M out",
+      "source": "https://ai.google.dev/gemini-api/docs/pricing"
+    },
+    "groq/openai/gpt-oss-20b": {
+      "stage": "llm",
+      "unit": "token",
+      "usd_per_m_input": 0.075,
+      "usd_per_m_cached_input": 0.0375,
+      "usd_per_m_output": 0.3,
+      "source": "https://console.groq.com/docs/models",
+      "billing": "cached input billed at 50% of the input rate (groq.com/pricing)"
+    },
+    "groq/openai/gpt-oss-120b": {
+      "stage": "llm",
+      "unit": "token",
+      "usd_per_m_input": 0.15,
+      "usd_per_m_cached_input": 0.075,
+      "usd_per_m_output": 0.6,
+      "source": "https://console.groq.com/docs/models",
+      "billing": "cached input billed at 50% of the input rate (groq.com/pricing)"
+    },
+    "cartesia/sonic-3": {
+      "stage": "tts",
+      "unit": "character",
+      "usd_per_unit": 3.8e-05,
+      "billing": "1 credit = 1 character; $38 per 1M credits is the Scale-plan overage rate (Startup $45, Pro $65); plan allowances are prepaid",
+      "source": "https://cartesia.ai/pricing"
+    },
+    "cartesia/sonic-2": {
+      "stage": "tts",
+      "unit": "character",
+      "usd_per_unit": 3.8e-05,
+      "source": "https://cartesia.ai/pricing"
+    },
+    "elevenlabs/eleven_flash_v2_5": {
+      "stage": "tts",
+      "unit": "character",
+      "usd_per_unit": 4e-05,
+      "billing": "$0.04 per 1k characters (Flash/Turbo); plan allowances are prepaid",
+      "source": "https://elevenlabs.io/pricing/api"
+    },
+    "elevenlabs/eleven_multilingual_v2": {
+      "stage": "tts",
+      "unit": "character",
+      "usd_per_unit": 8e-05,
+      "source": "https://elevenlabs.io/pricing/api"
+    }
+  },
+  "limitations": [
+    "Interrupted streamed TTS utterances emit no LiveKit metrics: their characters are not counted (under-estimate).",
+    "OpenAI-compatible vendors (Groq) report token usage only in the final chunk: a request cancelled by a barge-in counts 0 tokens.",
+    "Models the engine can build but that have no entry here produce a flagged line and incomplete=true: sarvam/sarvam-m, anthropic/*, openai/* (LLM, STT, TTS), google STT/TTS."
+  ]
 }

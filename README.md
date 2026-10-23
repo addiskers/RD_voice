@@ -171,7 +171,7 @@ calls list has a rupee column, and `GET /v1/calls/{id}/cost` recomputes it with 
 
 | Stage | Billed quantity (how it is measured) | Price basis |
 |---|---|---|
-| STT | audio streamed for the whole call, silence included (`duration_s`); the seconds of recognised speech are shown alongside | per minute, true seconds (Deepgram bills per second; Sarvam per minute) |
+| STT | audio streamed for the whole call, silence included (`duration_s`); the seconds the STT plugin had reported by call end are shown alongside | per minute, true seconds (Deepgram bills per second; Sarvam per minute) |
 | LLM | prompt tokens split into uncached and cached, plus completion tokens, summed over every request the call made (handoffs and tool calls included) | per million tokens, three rates |
 | TTS | characters sent to the vendor, including synthesis that was cancelled by a barge-in (vendors bill the request) | per 1,000 characters |
 | speech-to-speech | audio and text tokens in and out, from the Live API's usage report | per million tokens, four rates |

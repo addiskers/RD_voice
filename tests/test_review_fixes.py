@@ -127,12 +127,15 @@ async def test_undecryptable_secret_marks_row_dead_and_pass_continues(tmp_db):
 def test_worker_restart_finalizes_previous_incarnation_calls(client):
     """C4: a crashed worker restarted by Docker (same id, new started_at) heartbeats again within 20 s, so the
     dead-worker sweep never fires; the previous incarnation's calls must still be finalized."""
-    _hb(client, started_at="2026-10-23T10:00:00+00:00")
+    # relative times: a fixed date only worked while the clock was before the "new incarnation" stamp
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    _hb(client, started_at=(now - timedelta(minutes=5)).isoformat())
     live = _live_call_on_w1(client, uuid="cu-a")
     hung = _live_call_on_w1(client, uuid="cu-b")
     client.post(f"/carrier/plivo/hangup?call_id={hung}", data={"CallUUID": "cu-b", "HangupCauseCode": "4000",
                                                                "AnswerTime": "2026-10-23 10:00:00", "Duration": "20"})
-    _hb(client, started_at="2026-10-23T10:05:00+00:00", active_sessions=0)      # new incarnation
+    _hb(client, started_at=(now + timedelta(seconds=5)).isoformat(), active_sessions=0)      # new incarnation
     rec = client.get(f"/v1/calls/{live}", headers=H).json()
     assert rec["status"] == "failed" and rec["end_reason"] == "worker_lost"
     assert "cu-a" in FakePlivo.hangups
