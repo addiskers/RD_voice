@@ -163,6 +163,37 @@ from the earlier browser tests that it ignored the Hindi language policy. The Ca
 breakdown per turn (end of turn, LLM first token, TTS first byte, other) with a `+handoff` marker on turns
 that paid a transition, and the models the call ran on.
 
+### Per-call cost breakdown (2026-10-23)
+
+Every ended call carries `metrics.usage_detail` (what each vendor will bill) and `metrics.cost` (that usage
+multiplied by list prices), per stage and per model. The Calls tab shows it as a table under the call, the
+calls list has a rupee column, and `GET /v1/calls/{id}/cost` recomputes it with the current price list.
+
+| Stage | Billed quantity (how it is measured) | Price basis |
+|---|---|---|
+| STT | audio streamed for the whole call, silence included (`duration_s`); the seconds of recognised speech are shown alongside | per minute, true seconds (Deepgram bills per second; Sarvam per minute) |
+| LLM | prompt tokens split into uncached and cached, plus completion tokens, summed over every request the call made (handoffs and tool calls included) | per million tokens, three rates |
+| TTS | characters sent to the vendor, including synthesis that was cancelled by a barge-in (vendors bill the request) | per 1,000 characters |
+| speech-to-speech | audio and text tokens in and out, from the Live API's usage report | per million tokens, four rates |
+| carrier | call seconds rounded up to 30-second pulses | ₹ per minute from the carrier's India rate card |
+
+Quantities come from LiveKit's per-request metrics events, summed by the worker. Validation call (fake
+carrier, nova-3 + gemini-2.5-flash with a 256-token thinking budget + sonic-3, 43.2 s, 2026-10-23), worker
+sums against LiveKit's own `session_usage_updated` totals and the transcript:
+
+| Quantity | Worker (billed) | LiveKit summary | Note |
+|---|---|---|---|
+| LLM input tokens | 2,414 | 2,414 | exact |
+| LLM output tokens | 522 (153 + 369 thinking) | 153 | LiveKit's Google plugin omits thinking tokens; the worker recovers them from the total, Gemini bills them as output |
+| TTS characters | 495 | 495 | equals the agent transcript length; cancelled synthesis would be added |
+| STT seconds | 43.2 streamed | 31.6 reported | the plugin reports in 5 s batches and its final batch lands after the call closes; the caller channel is streamed for the whole call, so the call duration is billed |
+
+Prices live in
+[engine/pricing.json](engine/pricing.json) with the source URL and the date each was read; a model with no
+entry produces a flagged line and the total is marked incomplete rather than guessed. Set `PRICING_FILE` to
+a copy with your contracted rates and `USD_INR` to today's exchange rate. The figure is an estimate of the
+vendors' invoices, not the invoice: plan allowances, minimum fees and promotions are not modelled.
+
 ## Latency (browser path, laptop in India, 2026-09-08; `scripts/latency_bench.py --runs 2 --path browser`)
 `total` = end of the caller's speech → agent audio starts (user-perceived), p50 over the runs; STT column = exact
 transcription of the synthesized utterance. **Measured over the 16 kHz browser transport, not the phone path.**

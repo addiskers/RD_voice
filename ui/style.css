@@ -66,3 +66,5 @@ small { color: var(--muted); }
 .badge-lat { display: inline-block; margin-left: 8px; font-size: 11px; padding: 1px 6px; border-radius: 6px; background: rgba(0,0,0,.25); }
 .stagebar { display: flex; height: 6px; margin-top: 4px; border-radius: 3px; overflow: hidden; background: var(--panel-2); }
 .stagebar span { display: block; height: 100%; }
+.warn { color: #f59e0b; font-weight: 600; }
+.cost-missing td { color: #f59e0b; }

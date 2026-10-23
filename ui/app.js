@@ -340,9 +340,44 @@
     try {
       const rows = await api("/v1/calls?limit=50");
       $("calls-body").innerHTML = rows.map((c) => `<tr class="click" data-id="${c.id}"><td><code>${c.id.slice(5)}</code></td><td>${c.direction}</td>
-        <td><span class="pill ${c.status}">${c.status}</span></td><td>${fmt(c.duration_s, 0)}</td><td><small>${esc(JSON.stringify(c.outcome || {})).slice(0, 60)}</small></td></tr>`).join("") || "<tr><td colspan=5><small>no calls yet</small></td></tr>";
+        <td><span class="pill ${c.status}">${c.status}</span></td><td>${fmt(c.duration_s, 0)}</td><td>${inr((c.metrics || {}).cost)}</td><td><small>${esc(JSON.stringify(c.outcome || {})).slice(0, 60)}</small></td></tr>`).join("") || "<tr><td colspan=6><small>no calls yet</small></td></tr>";
       document.querySelectorAll("#calls-body tr.click").forEach((tr) => (tr.onclick = () => showCall(tr.dataset.id)));
-    } catch (e) { $("calls-body").innerHTML = `<tr><td colspan=5>${esc(e.message)}</td></tr>`; }
+    } catch (e) { $("calls-body").innerHTML = `<tr><td colspan=6>${esc(e.message)}</td></tr>`; }
+  }
+  function inr(cost) {
+    if (!cost || cost.total_inr == null) return "—";
+    return `₹${cost.total_inr.toFixed(2)}${cost.incomplete ? "<span class=\"warn\" title=\"a model has no price on file: lower bound\">*</span>" : ""}`;
+  }
+  const STAGE_NAMES = { stt: "STT · speech → text", llm: "LLM · reasoning", tts: "TTS · text → speech", realtime: "speech-to-speech", carrier: "telephony · carrier" };
+  function costQuantity(l) {
+    const d = l.detail || {};
+    if (l.unit === "minute" && d.billed_pulses_30s != null) return `${l.quantity.toFixed(1)} min <small>(${fmt(d.seconds, 0)} s → ${d.billed_pulses_30s} × 30 s pulses)</small>`;
+    if (l.unit === "minute") return `${l.quantity.toFixed(3)} min <small>(${fmt(d.seconds_streamed, 1)} s streamed, ${fmt(d.recognized_seconds, 1)} s of speech)</small>`;
+    if (l.unit === "character") return `${d.characters != null ? d.characters : l.quantity} chars <small>(${d.requests || 0} req${d.cancelled_characters ? `, ${d.cancelled_characters} cancelled` : ""}${d.audio_seconds ? `, ${fmt(d.audio_seconds, 1)} s audio` : ""})</small>`;
+    if (d.audio_input_tokens != null) return `<small>audio ${d.audio_input_tokens} in / ${d.audio_output_tokens} out · text ${d.text_input_tokens} in / ${d.text_output_tokens} out</small>`;
+    return `<small>${d.uncached_input_tokens || 0} in${d.cached_input_tokens ? ` + ${d.cached_input_tokens} cached` : ""} + ${d.output_tokens || 0} out${d.thinking_tokens ? ` (${d.thinking_tokens} thinking)` : ""} · ${d.requests || 0} req</small>`;
+  }
+  function costUnitPrice(l) {
+    const r = l.rates || {};
+    if (l.unit === "minute" && l.unit_price_usd != null) return (l.detail || {}).inr_per_minute != null ? `₹${l.detail.inr_per_minute}/min` : `$${l.unit_price_usd.toFixed(4)}/min`;
+    if (l.unit === "character" && l.unit_price_usd != null) return `$${(l.unit_price_usd * 1000).toFixed(3)}/1k chars`;
+    if (r.usd_per_m_audio_input != null) return `$${r.usd_per_m_audio_input}/M audio in · $${r.usd_per_m_audio_output}/M audio out · $${r.usd_per_m_text_input}/M text in · $${r.usd_per_m_text_output}/M text out`;
+    if (r.usd_per_m_input != null) return `$${r.usd_per_m_input}/M in · $${r.usd_per_m_cached_input != null ? r.usd_per_m_cached_input : r.usd_per_m_input}/M cached · $${r.usd_per_m_output}/M out`;
+    return "no price on file";
+  }
+  function costSection(c, cost) {
+    if (!cost || !cost.stages) return `<h2 style="margin-top:12px">Cost</h2><small>no usage recorded (call still running, or it ran on an older worker)</small>`;
+    const rows = Object.entries(cost.stages).flatMap(([stage, s]) => s.lines.map((l) => `<tr class="${l.usd == null ? "cost-missing" : ""}"><td>${STAGE_NAMES[stage] || stage}</td><td><b>${esc(l.provider)}</b> <small>${esc(l.model)}</small></td>
+        <td>${costQuantity(l)}</td><td><small>${costUnitPrice(l)}</small></td><td>${l.usd == null ? "?" : "$" + l.usd.toFixed(5)}</td><td>${l.inr == null ? "?" : "₹" + l.inr.toFixed(3)}</td><td><small title="${esc(l.source || "")}">${esc(l.note || "")}</small></td></tr>`)).join("");
+    const mins = c.duration_s ? c.duration_s / 60 : 0;
+    const perMin = mins ? ` · <b>₹${(cost.total_inr / mins).toFixed(2)} per minute</b>` : "";
+    const carrierUsd = cost.total_usd - (cost.models_usd != null ? cost.models_usd : cost.total_usd);
+    return `<h2 style="margin-top:12px">Cost · measured usage × list price</h2>
+      <table><thead><tr><th>stage</th><th>vendor · model</th><th>billed quantity</th><th>unit price</th><th>USD</th><th>INR</th><th>billing note</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="status">models <b>$${(cost.models_usd != null ? cost.models_usd : cost.total_usd).toFixed(5)}</b> (₹${((cost.models_usd != null ? cost.models_usd : cost.total_usd) * cost.usd_inr).toFixed(3)})${carrierUsd > 0 ? ` + carrier $${carrierUsd.toFixed(5)}` : ""} = <b>$${cost.total_usd.toFixed(5)} · ₹${cost.total_inr.toFixed(3)}</b>${perMin}
+      ${cost.incomplete ? '<br><span class="warn">* a model has no price on file: this total is a lower bound (add it to pricing.json)</span>' : ""}
+      ${(cost.notes || []).map((n) => `<br><span class="warn">${esc(n)}</span>`).join("")}
+      <br><small>${esc(cost.disclaimer || "")} · USD/INR ${cost.usd_inr} · ${esc(cost.price_list || "pricing.json")}</small></div>`;
   }
   const providers = (t) => [t.stt_provider, t.llm_provider, t.tts_provider].map((p) => p || "·").join(" / ");
   async function showCall(id) {
@@ -377,7 +412,9 @@
         <div>recording</div><div>${c.recording_url ? `<a href="#" data-rec="${c.id}">play</a> <span id="rec-holder"></span>` : "none"}</div>
         <div>error</div><div>${esc(c.error || "—")}</div>
         <div>models</div><div>${models}</div>
-        <div>failover</div><div>${esc(provEvents || "none")}</div></div>
+        <div>failover</div><div>${esc(provEvents || "none")}</div>
+        <div>cost</div><div>${m.cost && m.cost.total_inr != null ? `<b>₹${m.cost.total_inr.toFixed(3)}</b> ($${m.cost.total_usd.toFixed(5)})${m.cost.incomplete ? ' <span class="warn">*incomplete</span>' : ""}` : "—"}</div></div>
+        ${costSection(c, m.cost)}
         <h2 style="margin-top:12px">Per-turn latency (s) · end of caller speech → agent audio</h2>
         <table><thead><tr><th>#</th><th>node</th><th title="caller stopped speaking → turn committed (VAD / turn detector / Flux)">end of turn</th><th title="LLM time to first token">llm 1st token</th><th title="TTS time to first byte">tts 1st byte</th><th title="total minus the three stages: network hops, handoff round-trips, audio pipeline">other</th><th>total</th><th>served by</th></tr></thead><tbody>${turns || "<tr><td colspan=8><small>none</small></td></tr>"}</tbody></table>
         <div class="status">bar: <span style="color:#0ea5e9">■</span> end of turn <span style="color:#f59e0b">■</span> llm <span style="color:#10b981">■</span> tts <span style="color:#64748b">■</span> other</div>

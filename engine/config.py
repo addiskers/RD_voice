@@ -128,6 +128,10 @@ class Settings(BaseSettings):
     carrier_verify_log_only: bool = False           # verify but only log failures (first day on a new carrier account)
     vobiz_callback_ips: str = ""                    # comma-separated IPs/CIDRs allowed to call /carrier/vobiz/*
 
+    # --- cost estimates ---------------------------------------------------------------------
+    pricing_file: str = ""                          # override engine/pricing.json with your contracted rates
+    usd_inr: float = 0.0                            # 0 = use the value in the pricing file
+
     # --- test -------------------------------------------------------------------------------
     enable_test_endpoints: bool = False             # fake carrier + /v1/test/* endpoints
     worker_media_url: str = "ws://127.0.0.1:8090"   # where the fake carrier opens media streams (never the proxy)

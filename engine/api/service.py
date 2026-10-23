@@ -61,6 +61,8 @@ class EngineService:
         self.dispatcher = dispatcher
         self.cps = CpsBudget(settings.carrier_cps_limit)
         self.box = box or SecretBox(settings.engine_encryption_key)
+        from engine.pricing import load_prices
+        self.prices = load_prices(settings.pricing_file or None, settings.usd_inr or None)
 
     # ---------------------------------------------------------------- agents
     def validate_agent(self, cfg: AgentConfig) -> None:
@@ -518,7 +520,14 @@ class EngineService:
                 outcome.update(data["outcome"])
                 call.outcome = outcome
             call.recording_path = data.get("recording_path") or call.recording_path
-            call.cost_usd = data.get("cost_usd", call.cost_usd)
+            if data.get("usage_detail"):
+                metrics = dict(call.metrics or {})
+                metrics["usage_detail"] = data["usage_detail"]
+                metrics["cost"] = self.cost_for(call, data["usage_detail"], duration_s=data.get("duration_s"))
+                call.metrics = metrics
+                call.cost_usd = metrics["cost"]["total_usd"]
+            else:
+                call.cost_usd = data.get("cost_usd", call.cost_usd)
             await db.commit()   # keep the worker's transcript/metrics even when the call is already terminal
             reason = data.get("reason") or "agent_ended"
             # a call that ended normally stays "completed" even if the worker logged recoverable provider
@@ -621,6 +630,17 @@ class EngineService:
         if call.status != CallStatus.in_progress.value or not carrier_ok:
             await self.finalize(db, call, status=CallStatus.cancelled if call.status != CallStatus.in_progress.value
                                 else CallStatus.completed, reason=reason)
+
+    # ---------------------------------------------------------------- cost
+    def cost_for(self, call: Call, usage_detail: Optional[dict[str, Any]] = None,
+                 duration_s: Optional[float] = None) -> dict[str, Any]:
+        """Estimate from the call's billable quantities and the current price list (recomputable any time)."""
+        from engine.pricing import estimate_cost
+        usage = dict(usage_detail or (call.metrics or {}).get("usage_detail") or {})
+        seconds = duration_s if duration_s is not None else call.duration_s
+        if call.direction != Direction.browser.value and seconds is not None:
+            usage["carrier"] = {"provider": call.provider, "seconds": float(seconds)}
+        return estimate_cost(usage, self.prices)
 
     # ---------------------------------------------------------------- views
     def to_record(self, call: Call) -> CallRecord:

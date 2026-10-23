@@ -86,6 +86,21 @@ Two channels (left caller, right agent), 8 kHz, written during the call, uploade
 `GET /v1/calls/{id}/recording` streams it (or redirects to a signed URL with `RECORDING_URL_MODE=signed` on
 S3). Retention: `RECORDING_RETENTION_DAYS` (90); the sweeper deletes older objects daily and at start.
 
+## Cost estimates
+
+The worker sums billable quantities from LiveKit's metrics events (STT seconds, LLM tokens uncached/cached/
+output, TTS characters including cancelled synthesis, realtime audio/text tokens) and sends them on the
+`ended` event as `usage_detail`. The API prices them with `engine/pricing.json` (list prices with source URLs
+and the date read; `carrier_inr_per_minute` for Plivo/Vobiz with 30-second pulses) and stores the result in
+`metrics.cost` and `cost_usd`. `GET /v1/calls/{id}/cost` recomputes with the current price list.
+
+- Contracted rates: copy `engine/pricing.json`, edit, set `PRICING_FILE=/path/to/copy.json`.
+- Exchange rate: `USD_INR=<rate>` (default is the value in the pricing file).
+- A model with no entry shows `no price on file` and `incomplete: true`; the total is then a lower bound.
+  Add the key `<provider>/<model>` (as shown in the call's `models` row) to the pricing file.
+- Review the prices whenever a vendor changes its page; `as_of` in the file and in every cost payload says
+  when they were last read.
+
 ## Testing the phone path locally
 
 Start the API with `ENABLE_TEST_ENDPOINTS=true` and the worker; then:
@@ -123,6 +138,11 @@ Not run locally (needs the deploy box): the 25-call × 10-minute load test (acce
 SIGTERM-to-drain entrypoint (`deploy/worker-entrypoint.sh`), the S3 recording backend, Postgres end to end
 (the suite and drills ran on SQLite), Vobiz callbacks, and the browser click-through of the Ops tab (its
 endpoints were exercised over HTTP).
+
+Cost breakdown (2026-10-23): two fake-carrier calls; the worker's billed quantities matched LiveKit's own
+session totals for LLM input tokens and TTS characters exactly, and TTS characters equalled the agent
+transcript length. Gemini thinking tokens (369 of 522 output tokens on the thinking-enabled call) are
+counted by the worker but missing from LiveKit's summary.
 
 Found and fixed during verification: agent-transport 0.2.2 under LiveKit Agents 1.8 crashed every carrier
 call in `AgentSession.start` (`engine/worker/main.py::patch_stub_job`); Gemini rejects the LLM fallback

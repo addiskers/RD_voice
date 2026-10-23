@@ -72,6 +72,9 @@ class TurnMetrics(BaseModel):
 class CallMetrics(BaseModel):
     turns: list[TurnMetrics] = Field(default_factory=list)
     models: dict[str, str] = Field(default_factory=dict, description='{"stt": "deepgram nova-3", "llm": ..., "tts": ...}')
+    usage_detail: dict[str, Any] = Field(default_factory=dict,
+                                         description="billable quantities per stage/vendor/model (seconds, tokens, characters)")
+    cost: dict[str, Any] = Field(default_factory=dict, description="estimate: usage_detail x pricing.json, per stage line")
     provider_events: list[dict[str, Any]] = Field(default_factory=list,
                                                   description="availability changes: {kind, provider, available, at}")
     total_p50: Optional[float] = None

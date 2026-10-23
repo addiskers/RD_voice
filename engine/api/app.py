@@ -340,6 +340,15 @@ def build_app(settings: Optional[Settings] = None) -> FastAPI:
             raise HTTPException(409, "call is not live on a worker")
         return {"ok": True}
 
+    @app.get("/v1/calls/{call_id}/cost", tags=["calls"], dependencies=[Depends(require_api_key)])
+    async def call_cost(call_id: str, db: AsyncSession = Depends(db_session)):
+        """The per-stage cost estimate recomputed with the current price list (the record keeps the one
+        computed when the call ended)."""
+        call = await load_call(call_id, db)
+        if not (call.metrics or {}).get("usage_detail"):
+            raise HTTPException(404, "no usage recorded for this call (it has not ended, or ran on an older worker)")
+        return state.service.cost_for(call)
+
     @app.get("/v1/calls/{call_id}/deliveries", tags=["calls"], dependencies=[Depends(require_api_key)])
     async def list_deliveries(call_id: str, db: AsyncSession = Depends(db_session)):
         from sqlalchemy import select

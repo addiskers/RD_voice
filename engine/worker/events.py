@@ -43,6 +43,84 @@ class CallReporter:
         self._session: Optional[AgentSession] = None
         self.current_providers: dict[str, str] = {}
         self.stt_failed = False          # the turn-driving STT (Flux) died: the call cannot commit turns
+        # what each vendor will bill, keyed by (stage, provider, model): seconds, tokens, characters
+        self._usage: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+    # ------------------------------------------------------------------ billable usage
+    def _usage_key(self, kind: str, m: Any) -> tuple[str, str, str]:
+        from engine.worker.pipeline import provider_id
+        label = str(getattr(m, "label", "") or "")
+        provider = self.current_providers.get(kind) or provider_id(type("L", (), {"label": label})())
+        configured = (self.metrics.models.get(kind) or "").split(" ", 1)
+        model = str(getattr(m, "model", "") or "")
+        if not model and len(configured) == 2 and configured[0] == provider:
+            model = configured[1]
+        if not model and len(configured) == 2:
+            model = configured[1] if provider == configured[0] else ""
+        return kind, provider, model or "?"
+
+    def record_usage(self, m: Any) -> None:
+        """Called for every LiveKit metrics event; sums the billable quantities per stage, vendor and model."""
+        mtype = getattr(m, "type", "")
+        if mtype == "llm_metrics":
+            key = self._usage_key("llm", m)
+            u = self._usage.setdefault(key, {"requests": 0, "input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0,
+                                             "thinking_tokens": 0})
+            prompt = int(getattr(m, "prompt_tokens", 0) or 0)
+            completion = int(getattr(m, "completion_tokens", 0) or 0)
+            total = int(getattr(m, "total_tokens", 0) or 0)
+            # Gemini reports thinking tokens only inside the total (billed as output, excluded from
+            # completion_tokens); OpenAI-style providers break them out but already count them in completion.
+            hidden = max(0, total - prompt - completion) if total else 0
+            u["requests"] += 1
+            u["input_tokens"] += prompt
+            u["cached_input_tokens"] += int(getattr(m, "prompt_cached_tokens", 0) or 0)
+            u["output_tokens"] += completion + hidden
+            u["thinking_tokens"] += hidden or int(getattr(m, "reasoning_tokens", 0) or 0)
+        elif mtype == "tts_metrics":
+            key = self._usage_key("tts", m)
+            u = self._usage.setdefault(key, {"requests": 0, "characters": 0, "cancelled_characters": 0, "audio_seconds": 0.0})
+            chars = int(getattr(m, "characters_count", 0) or 0)
+            u["requests"] += 1
+            u["characters"] += chars                       # vendors bill the request even when playout is cancelled
+            if getattr(m, "cancelled", False):
+                u["cancelled_characters"] += chars
+            else:
+                u["audio_seconds"] = round(u["audio_seconds"] + float(getattr(m, "audio_duration", 0.0) or 0.0), 3)
+        elif mtype == "stt_metrics":
+            key = self._usage_key("stt", m)
+            u = self._usage.setdefault(key, {"recognized_seconds": 0.0})
+            u["recognized_seconds"] = round(u["recognized_seconds"] + float(getattr(m, "audio_duration", 0.0) or 0.0), 3)
+        elif mtype == "realtime_model_metrics":
+            key = self._usage_key("llm", m)
+            key = ("realtime", key[1], key[2])
+            u = self._usage.setdefault(key, {"requests": 0, "audio_input_tokens": 0, "text_input_tokens": 0,
+                                             "cached_input_tokens": 0, "audio_output_tokens": 0, "text_output_tokens": 0})
+            inp, out = getattr(m, "input_token_details", None), getattr(m, "output_token_details", None)
+            u["requests"] += 1
+            u["audio_input_tokens"] += int(getattr(inp, "audio_tokens", 0) or 0)
+            u["text_input_tokens"] += int(getattr(inp, "text_tokens", 0) or 0)
+            u["cached_input_tokens"] += int(getattr(inp, "cached_tokens", 0) or 0)
+            u["audio_output_tokens"] += int(getattr(out, "audio_tokens", 0) or 0)
+            u["text_output_tokens"] += int(getattr(out, "text_tokens", 0) or 0)
+
+    def usage_detail(self, call_seconds: Optional[float] = None) -> dict[str, list[dict[str, Any]]]:
+        """Billable quantities per stage. STT is billed on the audio streamed for the whole call (silence
+        included), so its seconds are the call duration when known, with the recognized seconds alongside."""
+        out: dict[str, list[dict[str, Any]]] = {}
+        seen_stt = False
+        for (kind, provider, model), u in self._usage.items():
+            entry = {"provider": provider, "model": model, **u}
+            if kind == "stt":
+                seen_stt = True
+                entry = {"provider": provider, "model": model,
+                         "seconds": round(call_seconds if call_seconds is not None else u["recognized_seconds"], 3),
+                         "recognized_seconds": u["recognized_seconds"]}
+            out.setdefault(kind, []).append(entry)
+        if not seen_stt and call_seconds is not None and not self._realtime and self.metrics.models.get("stt"):
+            provider, _, model = self.metrics.models["stt"].partition(" ")
+            out["stt"] = [{"provider": provider, "model": model, "seconds": round(call_seconds, 3), "recognized_seconds": 0.0}]
+        return out
 
     def _new_turn(self, **kwargs: Any) -> TurnMetrics:
         """A TurnMetrics stamped with the vendors serving each stage right now (so failovers are visible)."""
@@ -147,6 +225,10 @@ class CallReporter:
             m = ev.metrics
             mtype = getattr(m, "type", "")
             try:
+                self.record_usage(m)
+            except Exception as e:
+                logger.debug("usage accounting error: %s", e)
+            try:
                 if mtype == "eou_metrics":
                     self._turn_index += 1
                     self._current = self._new_turn(turn=self._turn_index, at=self.at(),
@@ -187,8 +269,12 @@ class CallReporter:
 
         @session.on("session_usage_updated")
         def _usage(ev):
+            # LiveKit's own running totals (a dataclass in 1.8): kept beside usage_detail as a cross-check
             try:
-                self.metrics.usage = ev.usage.model_dump(mode="json") if hasattr(ev.usage, "model_dump") else {}
+                import dataclasses
+                u = ev.usage
+                self.metrics.usage = (u.model_dump(mode="json") if hasattr(u, "model_dump")
+                                      else dataclasses.asdict(u) if dataclasses.is_dataclass(u) else {})
             except Exception:
                 pass
 
@@ -259,6 +345,7 @@ class CallReporter:
     def ended(self, reason: str, *, recording_path: Optional[str] = None, outcome: Optional[dict[str, Any]] = None,
               hangup_carrier: bool = False, error: Optional[str] = None) -> None:
         snap = self.snapshot()
-        self.post("ended", {"reason": reason, "duration_s": self.at(), "recording_path": recording_path,
+        duration = self.at()
+        self.post("ended", {"reason": reason, "duration_s": duration, "recording_path": recording_path,
                             "outcome": outcome or {}, "hangup_carrier": hangup_carrier, "error": error,
-                            "errors": self.errors, **snap})
+                            "errors": self.errors, "usage_detail": self.usage_detail(call_seconds=duration), **snap})
