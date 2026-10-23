@@ -40,18 +40,18 @@ def test_tts_fallback_switches_vendor_on_the_first_failure():
 
 
 @pytest.mark.asyncio
-async def test_tts_fallback_gives_the_primary_three_seconds_not_ten():
+async def test_tts_fallback_gives_the_primary_six_seconds_not_ten():
     # measured 2026-10-23: with the primary returning 402 on connect, LiveKit's adapter still waited its 10 s
     # default timeout before switching, so every call opened with 10 s of silence. A voice that has produced
-    # nothing in 3 s is dead for a phone call.
+    # nothing in 6 s is dead for a phone call (3 s dropped Sarvam mid-sentence: the deadline doubles as its receive timeout).
     from engine.worker.pipeline import TTS_ATTEMPT_TIMEOUT_S, build_tts
     s = Settings(_env_file=None, cartesia_api_key="c", sarvam_api_key="s")
     adapter = build_tts(VoiceRef(provider="cartesia", model="sonic-3", language="en"), s, "en-IN")
     stream = adapter.stream()
     chunked = adapter.synthesize("hello")
     try:
-        assert stream._conn_options.timeout == TTS_ATTEMPT_TIMEOUT_S == 3.0
-        assert chunked._conn_options.timeout == 3.0
+        assert stream._conn_options.timeout == TTS_ATTEMPT_TIMEOUT_S == 6.0
+        assert chunked._conn_options.timeout == 6.0
         assert adapter._max_retry_per_tts == 0
     finally:
         await stream.aclose()

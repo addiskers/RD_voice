@@ -171,7 +171,7 @@ What broke, and what changed:
 - **The primary voice took 10 s to be given up on.** With Cartesia refusing every connection (first 429, then
   402 once the account's credits ran out during these tests), LiveKit's adapter still waited its 10 s default
   per attempt, so every call opened with 10 to 12 s of silence even though Sarvam was ready. The adapter now
-  gives a vendor 3 s to produce audio (`TTS_ATTEMPT_TIMEOUT_S`) and no retries before switching.
+  gives a vendor 6 s to produce audio (`TTS_ATTEMPT_TIMEOUT_S`, which the Sarvam plugin also uses as its socket receive timeout: 3 s dropped it mid-sentence) and no retries before switching.
 - **The Sarvam fallback voice rejected every request** because it inherited the primary's language code
   (`en`); Sarvam needs `en-IN`. Bare codes are now regionalised.
 - **Failover events vanished from the record** when the final metrics snapshot arrived; they are kept now.

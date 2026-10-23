@@ -55,11 +55,12 @@ def is_flux(ref: ProviderRef, settings: Settings) -> bool:
 
 _PROVIDER_ALIASES = {"gemini": "google", "eleven": "elevenlabs"}
 LLM_ATTEMPT_TIMEOUT_S = 15.0        # per-attempt deadline inside the LLM FallbackAdapter (Gemini needs >= 10 s)
-TTS_ATTEMPT_TIMEOUT_S = 3.0         # a voice that has produced nothing in 3 s is dead for a phone call (LiveKit: 10 s)
+TTS_ATTEMPT_TIMEOUT_S = 6.0         # per-attempt deadline, also each vendor's socket receive timeout (LiveKit: 10 s); 3 s dropped
+                                    # Sarvam mid-sentence on 2026-10-23, Cartesia hard failures (402/429) surface in <0.5 s anyway
 
 
 def _fast_failover_adapter(instances: list[Any]):
-    """LiveKit's TTS FallbackAdapter with a 3 s per-attempt deadline and no retries on the failing vendor.
+    """LiveKit's TTS FallbackAdapter with a 6 s per-attempt deadline and no retries on the failing vendor.
     Measured 2026-10-23: with the primary refusing every connection (402/429) the stock adapter still waited
     its 10 s default before switching, so every call opened with 10 s of silence."""
     import dataclasses
