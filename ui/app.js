@@ -129,12 +129,20 @@
 
   // ------------------------------------------------------------------ audio (browser mic <-> worker)
   class Audio {
-    constructor() { this.ctx = null; this.stream = null; this.node = null; this.next = 0; this.sources = []; this.muted = false; this.inA = null; this.outA = null; }
+    constructor() { this.ctx = null; this.stream = null; this.node = null; this.next = 0; this.sources = []; this.muted = false; this.inA = null; this.outA = null; this.sink = null; this.el = null; }
     async start(onPcm) {
       this.ctx = new (window.AudioContext || window.webkitAudioContext)();
       await this.ctx.audioWorklet.addModule("pcm-processor.js");
-      this.outA = this.ctx.createAnalyser(); this.outA.fftSize = 256; this.outA.connect(this.ctx.destination);
-      this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      // The agent's voice is played through a media element, not straight to the AudioContext output:
+      // Chrome's echo canceller only reliably subtracts sound rendered by media elements, so with speakers the
+      // greeting came back through the mic and was transcribed as the caller saying "Hello." (2026-10-23).
+      this.outA = this.ctx.createAnalyser(); this.outA.fftSize = 256;
+      this.sink = this.ctx.createMediaStreamDestination(); this.outA.connect(this.sink);
+      this.el = document.createElement("audio"); this.el.srcObject = this.sink.stream; this.el.autoplay = true; this.el.playsInline = true;
+      try { await this.el.play(); } catch (e) { console.warn("playback element could not start, falling back to direct output", e); this.outA.connect(this.ctx.destination); }
+      // automatic gain control amplifies room noise whenever the caller goes quiet, which the voice detector then
+      // hears as speech; echo cancellation and noise suppression stay on
+      this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false } });
       const src = this.ctx.createMediaStreamSource(this.stream);
       this.inA = this.ctx.createAnalyser(); this.inA.fftSize = 256; src.connect(this.inA);
       this.node = new AudioWorkletNode(this.ctx, "pcm-processor");
@@ -161,8 +169,9 @@
     stop() {
       if (this.stream) this.stream.getTracks().forEach((t) => t.stop());
       this.sources.forEach((s) => { try { s.stop(); } catch {} });
+      if (this.el) { try { this.el.pause(); this.el.srcObject = null; } catch {} }
       if (this.ctx && this.ctx.state !== "closed") this.ctx.close();
-      this.ctx = null; this.stream = null; this.node = null; this.sources = [];
+      this.ctx = null; this.stream = null; this.node = null; this.sources = []; this.sink = null; this.el = null;
     }
     downsample(buf, from, to) {
       if (from === to) return buf;
