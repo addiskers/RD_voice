@@ -279,12 +279,15 @@
     $("meter-in").style.width = "0"; $("meter-out").style.width = "0";
     $("talk-status").textContent = "Call ended. Fetching the engine's record…";
     if (talk.callId) {
-      for (let i = 0; i < 6; i++) {
+      // the cost breakdown arrives with the worker's final "ended" report, a few seconds after the session closes
+      for (let i = 0; i < 20; i++) {
         await new Promise((r) => setTimeout(r, 800));
         try {
           const c = await api("/v1/calls/" + talk.callId);
           renderSummary(c);
-          if (["completed", "failed", "cancelled"].includes(c.status)) break;
+          const done = ["completed", "failed", "cancelled"].includes(c.status);
+          if (done && (c.metrics || {}).cost) break;
+          $("talk-status").textContent = done ? "Call ended. Waiting for the worker's cost report…" : "Call ending…";
         } catch (e) { $("talk-status").textContent = "Record fetch failed: " + e.message; break; }
       }
       $("talk-status").textContent = "Idle.";
@@ -298,8 +301,10 @@
       ["turns", `${turns} measured · total p50 ${fmt(m.total_p50)} s · p95 ${fmt(m.total_p95)} s`],
       ["first word", fmt(m.pickup_to_first_word) + " s after connect"],
       ["outcome", `<code>${esc(JSON.stringify(c.outcome || {}))}</code>`],
+      ["cost", m.cost && m.cost.total_inr != null ? `<b>₹${m.cost.total_inr.toFixed(3)}</b> ($${m.cost.total_usd.toFixed(5)}) · breakdown below` : "waiting for the worker's final report…"],
       ["recording", c.recording_url ? `<a href="#" data-rec="${c.id}">play</a>` : "none (browser sessions are not recorded)"],
     ].map(([k, v]) => `<div>${k}</div><div>${v}</div>`).join("");
+    $("talk-cost").innerHTML = m.cost ? costSection(c, m.cost) : "";
     bindRecordingLinks($("talk-summary"));
   }
   $("talk-start").onclick = startTalk;
