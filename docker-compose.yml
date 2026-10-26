@@ -3,7 +3,7 @@ services:
     image: postgres:16
     environment:
       POSTGRES_USER: gvox
-      POSTGRES_PASSWORD: gvox
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: gvox
     volumes:
       - pg-data:/var/lib/postgresql/data
@@ -19,7 +19,7 @@ services:
     env_file: .env
     environment:
       ROLE: api
-      DATABASE_URL: postgresql+asyncpg://gvox:gvox@postgres:5432/gvox
+      DATABASE_URL: postgresql+asyncpg://gvox:${POSTGRES_PASSWORD}@postgres:5432/gvox
       INTERNAL_API_URL: http://api:8080
     volumes:
       - engine-data:/app/data
@@ -34,7 +34,7 @@ services:
     environment:
       ROLE: worker
       WORKER_ID: worker
-      DATABASE_URL: postgresql+asyncpg://gvox:gvox@postgres:5432/gvox
+      DATABASE_URL: postgresql+asyncpg://gvox:${POSTGRES_PASSWORD}@postgres:5432/gvox
       INTERNAL_API_URL: http://api:8080
       WORKER_INTERNAL_URL: http://worker:8091
     volumes:
@@ -51,7 +51,7 @@ services:
     environment:
       ROLE: worker
       WORKER_ID: worker-b
-      DATABASE_URL: postgresql+asyncpg://gvox:gvox@postgres:5432/gvox
+      DATABASE_URL: postgresql+asyncpg://gvox:${POSTGRES_PASSWORD}@postgres:5432/gvox
       INTERNAL_API_URL: http://api:8080
       WORKER_INTERNAL_URL: http://worker-b:8091
     volumes:

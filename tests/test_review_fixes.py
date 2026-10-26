@@ -248,7 +248,7 @@ def test_put_agent_with_masked_key_keeps_previous_key(tmp_path):
     c = _sec_client(tmp_path, carrier_verify_signatures=False, engine_encryption_key=key)
     try:
         agent = _agent_body()
-        agent["stt"] = {"provider": "deepgram", "model": "nova-3", "api_key": "dg-secret-key-1234"}
+        agent["stt"] = {"provider": "deepgram", "model": "nova-3", "api_key": "example-key-1234"}
         assert c.put("/v1/agents/eo-rsvp", json=agent, headers=H).status_code == 200
         shown = c.get("/v1/agents/eo-rsvp", headers=H).json()["config"]
         assert shown["stt"]["api_key"] == "****1234"
@@ -256,7 +256,7 @@ def test_put_agent_with_masked_key_keeps_previous_key(tmp_path):
         call_id = c.post("/v1/calls", json={"to": "+919876543210", "agent": {"agent_id": "eo-rsvp"},
                                             "variables": {"first_name": "P"}}, headers=H).json()["call_id"]
         rt = c.get(f"/internal/calls/{call_id}/runtime", headers={"X-Internal-Token": INTERNAL}).json()
-        assert rt["agent"]["stt"]["api_key"] == "dg-secret-key-1234"
+        assert rt["agent"]["stt"]["api_key"] == "example-key-1234"
         fresh = _agent_body()
         fresh["stt"] = {"provider": "deepgram", "model": "nova-3", "api_key": "****9999"}
         assert c.put("/v1/agents/never-seen", json=fresh, headers=H).status_code == 422

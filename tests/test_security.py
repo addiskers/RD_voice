@@ -107,13 +107,13 @@ def test_unsigned_carrier_callback_403(tmp_path):
 
 def test_secretbox_roundtrip_and_mask():
     box = SecretBox(Fernet.generate_key().decode())
-    token = box.encrypt("sk-abcdef123456")
-    assert token.startswith("enc:v1:") and box.decrypt(token) == "sk-abcdef123456"
+    token = box.encrypt("example-key-abcdef123456")
+    assert token.startswith("enc:v1:") and box.decrypt(token) == "example-key-abcdef123456"
     assert box.decrypt("plain-value") == "plain-value"
-    assert SecretBox.mask("sk-abcdef123456") == "****3456" and SecretBox.mask("short") == "****"
+    assert SecretBox.mask("example-key-abcdef123456") == "****3456" and SecretBox.mask("short") == "****"
     plain = SecretBox("")
     assert plain.encrypt("v") == "v" and plain.decrypt("v") == "v"
-    cfg = encrypt_agent_config({"stt": {"provider": "deepgram", "api_key": "dg-secret-key-1234"}, "llm": {"provider": "google"}}, box)
+    cfg = encrypt_agent_config({"stt": {"provider": "deepgram", "api_key": "example-key-1234"}, "llm": {"provider": "google"}}, box)
     assert cfg["stt"]["api_key"].startswith("enc:v1:") and "api_key" not in cfg["llm"]
     assert mask_agent_config(cfg, box)["stt"]["api_key"] == "****1234"
 
@@ -123,7 +123,7 @@ def test_agent_keys_encrypted_at_rest_and_masked_on_get(tmp_path):
     c = _client(tmp_path, carrier_verify_signatures=False, engine_encryption_key=key)
     try:
         agent = _agent_body()
-        agent["stt"] = {"provider": "deepgram", "model": "nova-3", "api_key": "dg-secret-key-1234"}
+        agent["stt"] = {"provider": "deepgram", "model": "nova-3", "api_key": "example-key-1234"}
         assert c.put("/v1/agents/eo-rsvp", json=agent, headers=H).status_code == 200
         shown = c.get("/v1/agents/eo-rsvp", headers=H).json()["config"]["stt"]["api_key"]
         assert shown == "****1234"
@@ -140,7 +140,7 @@ def test_agent_keys_encrypted_at_rest_and_masked_on_get(tmp_path):
                                             "variables": {"first_name": "P"}, "webhook_url": "https://p/hook",
                                             "webhook_secret": "hook-secret-9999"}, headers=H).json()["call_id"]
         rt = c.get(f"/internal/calls/{call_id}/runtime", headers={"X-Internal-Token": INTERNAL}).json()
-        assert rt["agent"]["stt"]["api_key"] == "dg-secret-key-1234"      # the worker needs the real key
+        assert rt["agent"]["stt"]["api_key"] == "example-key-1234"      # the worker needs the real key
 
         async def call_row():
             from engine.api.db import Call
