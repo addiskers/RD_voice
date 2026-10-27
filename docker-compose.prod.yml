@@ -1,0 +1,21 @@
+# Production overlay: `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build`
+# Caddy terminates TLS on 80/443 for ENGINE_HOST and MEDIA_HOST (set in .env) and keeps its certificates in a
+# volume so a rebuild does not re-issue them.
+services:
+  caddy:
+    ports: !override
+      - "80:80"
+      - "443:443"
+    environment:
+      ENGINE_HOST: ${ENGINE_HOST:?set ENGINE_HOST in .env (e.g. engine.tringtringai.com)}
+      MEDIA_HOST: ${MEDIA_HOST:?set MEDIA_HOST in .env (e.g. media.tringtringai.com)}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env (Let's Encrypt expiry notices)}
+      CARRIER_MEDIA_IPS: ${CARRIER_MEDIA_IPS:-0.0.0.0/0 ::/0}
+    volumes: !override
+      - ./deploy/Caddyfile.prod:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  caddy-data:
+  caddy-config:

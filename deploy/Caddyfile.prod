@@ -1,0 +1,28 @@
+# Production reverse proxy: public HTTPS for the API and WSS for the carrier media stream, certificates from
+# Let's Encrypt, hostnames from .env (ENGINE_HOST, MEDIA_HOST). Used by docker-compose.prod.yml.
+#   PROD: ENGINE_HOST=engine.tringtringai.com      MEDIA_HOST=media.tringtringai.com
+#   DEV:  ENGINE_HOST=engine.dev.tringtringai.com  MEDIA_HOST=media.dev.tringtringai.com
+# CARRIER_MEDIA_IPS: space-separated IPs/CIDRs allowed to open media streams (the carrier's published
+# media ranges). The default lets everything in; narrow it once you have Plivo's list.
+{
+	email {$ACME_EMAIL}
+}
+
+{$ENGINE_HOST} {
+	encode gzip
+	reverse_proxy api:8080
+}
+
+{$MEDIA_HOST} {
+	@carriers remote_ip {$CARRIER_MEDIA_IPS}
+	handle @carriers {
+		reverse_proxy worker:8090 worker-b:8090 {
+			lb_policy first
+			health_uri /healthz
+			health_port 8091
+			health_interval 5s
+			health_timeout 2s
+		}
+	}
+	respond 403
+}

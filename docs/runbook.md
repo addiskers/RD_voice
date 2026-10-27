@@ -15,6 +15,40 @@ Operations notes for the engine after slice 1 (2026-10-23). Commands assume the 
 A worker heartbeats every 5 s (`POST /internal/workers/heartbeat`); the API marks it dead after 20 s of
 silence and fails its live calls as `worker_lost` (carrier legs are hung up).
 
+## Deploy (TringTring DEV / PROD)
+
+One Linux VM per environment (Mumbai, 4 vCPU / 8 GB, Docker with the compose plugin, ports 80 and 443 open)
+and two DNS A records pointing at it: `engine.<env>` and `media.<env>` (PROD: `engine.tringtringai.com`,
+`media.tringtringai.com`; DEV: `engine.dev.tringtringai.com`, `media.dev.tringtringai.com`). Plain A
+records, not proxied.
+
+```
+git clone https://bitbucket.org/GlobalVox/gvox-bridge.git gvox && cd gvox
+git checkout slice1-telephony-reliability          # or main once merged
+cp .env.example .env
+```
+
+Fill `.env`: `PUBLIC_HTTP_URL=https://engine.<env>`, `PUBLIC_WS_URL=wss://media.<env>`, `ENGINE_HOST`,
+`MEDIA_HOST`, `ACME_EMAIL`; five generated secrets (`ENGINE_API_KEY`, `INTERNAL_TOKEN`, `WEBHOOK_SECRET`,
+`POSTGRES_PASSWORD` from `python -c "import secrets; print(secrets.token_urlsafe(32))"`, and
+`ENGINE_ENCRYPTION_KEY` from `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`);
+Plivo credentials and the model keys; `ENABLE_TEST_ENDPOINTS=false`; `CARRIER_VERIFY_LOG_ONLY=true` for day
+one; `WORKER_MAX_SESSIONS=10` and `CARRIER_CPS=plivo=2` until the box has been load-tested.
+
+```
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+docker compose logs -f api worker                  # "Application startup complete", worker "ready"
+curl https://engine.<env>/health
+curl -H "Authorization: Bearer $ENGINE_API_KEY" https://engine.<env>/v1/workers      # status: live
+```
+
+Caddy fetches the certificates itself (they persist in the `caddy-data` volume). Then register the agent
+and number (README, Phase-0 runbook), place one real call with `scripts/place_test_call.py`, check the
+console at `https://engine.<env>/ui/`, and once callbacks verify cleanly set `CARRIER_VERIFY_LOG_ONLY=false`
+and `docker compose up -d api`. Upgrades: see the next section. Everyday: `docker compose -f docker-compose.yml
+-f docker-compose.prod.yml` for every command, or export `COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml`
+once in the shell profile.
+
 ## Deploy without dropping calls (blue/green)
 
 1. `docker compose --profile standby up -d --build worker-b` (new image; `worker` keeps serving).
