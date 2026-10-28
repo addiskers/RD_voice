@@ -10,3 +10,5 @@ data/*
 !data/recordings/
 data/recordings/*
 !data/recordings/.gitkeep
+.env.*
+!.env.example
