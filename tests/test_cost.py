@@ -115,3 +115,10 @@ def test_empty_usage_still_prices_the_carrier_leg():
     out = estimate_cost({"carrier": {"provider": "plivo", "seconds": 12.0}}, pl)
     assert out["stages"]["carrier"]["lines"][0]["inr"] == pytest.approx(0.19)
     assert out["incomplete"] is False and out["models_usd"] == 0
+
+
+def test_blank_usd_inr_in_env_means_use_the_price_file_value():
+    # .env.example ships `USD_INR=` (blank); the engine must start with that, not fail to parse a float
+    from engine.config import Settings
+    assert Settings(_env_file=None, usd_inr="").usd_inr == 0.0
+    assert Settings(_env_file=None, pricing_file="", usd_inr="84").usd_inr == 84.0

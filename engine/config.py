@@ -7,8 +7,9 @@ per-agent provider keys (BYOK) arrive inside the agent config and override these
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Any
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -131,6 +132,11 @@ class Settings(BaseSettings):
     # --- cost estimates ---------------------------------------------------------------------
     pricing_file: str = ""                          # override engine/pricing.json with your contracted rates
     usd_inr: float = 0.0                            # 0 = use the value in the pricing file
+
+    @field_validator("usd_inr", mode="before")
+    @classmethod
+    def _blank_usd_inr(cls, v: Any) -> Any:
+        return 0.0 if isinstance(v, str) and not v.strip() else v   # `USD_INR=` in .env means "price file value"
 
     # --- test -------------------------------------------------------------------------------
     enable_test_endpoints: bool = False             # fake carrier + /v1/test/* endpoints
