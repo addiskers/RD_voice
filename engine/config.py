@@ -6,15 +6,30 @@ per-agent provider keys (BYOK) arrive inside the agent config and override these
 
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 from typing import Any
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _strip_edges(cls, v: Any, info: ValidationInfo) -> Any:
+        """A value pasted into a Kubernetes Secret with `echo | base64` (or copied with a stray space) arrives with
+        a trailing newline; `ENGINE_API_KEY` then matches no HTTP header and every call is 401 (test env,
+        2026-10-29). Edges are stripped for every setting; the field is named in the log, never the value."""
+        if isinstance(v, str) and v != v.strip():
+            logger.warning("setting %s had surrounding whitespace (newline or space) in its value; stripped",
+                           (info.field_name or "?").upper())
+            return v.strip()
+        return v
 
     # --- public reachability -------------------------------------------------------------
     # Carriers fetch answer XML and post ring/hangup callbacks to the API on this base URL.
