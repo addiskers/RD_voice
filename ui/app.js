@@ -16,6 +16,7 @@
     localStorage.setItem("gvox.apiBase", state.apiBase);
     localStorage.setItem("gvox.apiKey", state.apiKey);
     checkHealth();
+    loadConfig();            // a corrected API key must take effect without a page reload
   };
   async function api(path, opts = {}) {
     const headers = Object.assign({ Authorization: `Bearer ${state.apiKey}` }, opts.headers || {});
@@ -75,7 +76,11 @@
         $("phone-warning").textContent = `PUBLIC_HTTP_URL is ${pub}: the carrier cannot reach this machine, so phone calls will ring and then drop. Put the API and the worker behind public HTTPS/WSS URLs (or a tunnel) before dialing.`;
       }
     } catch (e) {
-      $("talk-status").textContent = "Could not load /ui/config.json: " + e.message;
+      state.config = null; state.example = null;
+      const why = /^401/.test(e.message) ? "API key rejected (401): enter this engine's ENGINE_API_KEY in the header box and press Save."
+        : "Could not load the engine config: " + e.message;
+      $("talk-status").textContent = why;
+      $("talk-start").title = why;
     }
   }
 
@@ -99,6 +104,9 @@
   }
   function currentAgent(sourceSel) {
     const source = $(sourceSel).value;
+    if (!state.config || !state.example) {
+      throw new Error("engine config not loaded. Enter this engine's API key (ENGINE_API_KEY in the server's .env) in the header box, press Save, and check the status line.");
+    }
     let agent;
     if (source === "editor") {
       agent = JSON.parse($("agent-json").value);
@@ -222,7 +230,7 @@
   // ------------------------------------------------------------------ talk session
   async function startTalk() {
     let agent;
-    try { agent = currentAgent("talk-agent-source"); } catch (e) { $("talk-status").textContent = "Agent JSON invalid: " + e.message; return; }
+    try { agent = currentAgent("talk-agent-source"); } catch (e) { $("talk-status").textContent = "" + e.message; return; }
     $("talk-start").disabled = true; $("talk-transcript").innerHTML = ""; $("talk-callid").textContent = "";
     $("talk-status").className = "status"; $("talk-status").textContent = "Requesting microphone…";
     resetLatency();
@@ -321,7 +329,7 @@
 
   // ------------------------------------------------------------------ phone
   $("phone-dial").onclick = async () => {
-    let agent; try { agent = currentAgent("phone-agent-source"); } catch (e) { $("phone-status").textContent = "Agent JSON invalid: " + e.message; return; }
+    let agent; try { agent = currentAgent("phone-agent-source"); } catch (e) { $("phone-status").textContent = "" + e.message; return; }
     const body = { to: $("phone-to").value.trim(), agent, variables: variables(), provider: $("phone-provider").value || null,
       webhook_url: $("phone-webhook").value.trim() || null, metadata: { source: "ui" } };
     $("phone-status").textContent = "Dialing…";
